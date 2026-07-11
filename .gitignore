@@ -1,0 +1,35 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments and local configuration
+.venv/
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+local-notes.md
+docs/project-brief.md
+agent-state.json
+agent-state.json.tmp
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*.swp

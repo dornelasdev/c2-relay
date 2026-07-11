@@ -1,0 +1,82 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "c2-relay"
+version = "0.1.0"
+description = "A security-focused Python framework for authenticated agent coordination."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+license = "Apache-2.0"
+authors = [{ name = "dornelasdev" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+dependencies = [
+    "alembic>=1.18.5,<2",
+    "fastapi>=0.139,<0.140",
+    "httpx2>=2.5,<3",
+    "pydantic>=2.13.4,<3",
+    "pydantic-settings>=2.14.2,<3",
+    "sqlalchemy>=2.0.51,<2.1",
+    "uvicorn>=0.50.2,<0.51",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.15,<2",
+    "pytest>=8.3,<10",
+    "pytest-cov>=6,<8",
+    "ruff>=0.11,<1",
+]
+
+[project.scripts]
+c2-relay-server = "c2_relay.api.cli:main"
+c2-relay-agent = "c2_relay.agent.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/c2_relay"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov=c2_relay",
+    "--cov-branch",
+    "--cov-report=term-missing",
+    "--cov-fail-under=100",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["c2_relay"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
