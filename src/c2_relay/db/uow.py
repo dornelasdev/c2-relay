@@ -4,7 +4,12 @@ from types import TracebackType
 
 from sqlalchemy.orm import Session
 
-from c2_relay.db.repositories import AgentRepository, ResultRepository, TaskRepository
+from c2_relay.db.repositories import (
+    AgentRepository,
+    OperatorRepository,
+    ResultRepository,
+    TaskRepository,
+)
 from c2_relay.db.session import SessionFactory
 
 
@@ -13,12 +18,14 @@ class UnitOfWork:
         self._session_factory = session_factory
         self.session: Session | None = None
         self.agents: AgentRepository
+        self.operators: OperatorRepository
         self.tasks: TaskRepository
         self.results: ResultRepository
 
     def __enter__(self) -> "UnitOfWork":
         self.session = self._session_factory()
         self.agents = AgentRepository(self.session)
+        self.operators = OperatorRepository(self.session)
         self.tasks = TaskRepository(self.session)
         self.results = ResultRepository(self.session)
         return self

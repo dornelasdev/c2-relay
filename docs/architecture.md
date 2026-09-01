@@ -64,9 +64,10 @@ FastAPI exposes versioned routes under `/api/v1`. The transport layer validates 
 delegates persistence to a unit of work; it does not redefine domain lifecycle rules.
 
 - Health is public and carries no operational data.
-- Enrollment and operator task creation require the configured bootstrap token. These operations
-  return `503` when no token is configured.
+- Enrollment requires the configured bootstrap token and returns `503` when no token is
+  configured. Task creation requires an active operator's bearer credential.
 - Enrollment issues a high-entropy agent credential once and persists only its SHA-256 digest.
+- Operator provisioning also displays its credential once and persists only the secret digest.
 - Check-in, task polling, and result submission require the enrolled agent's bearer credential.
 - Polling claims a queued task once. Results must match the authenticated agent, claimed task,
   and requested action. Repeating an identical result is idempotent; conflicting results fail.

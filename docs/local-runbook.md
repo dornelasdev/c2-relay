@@ -12,7 +12,11 @@ Install dependencies and create the database schema:
 ```bash
 uv sync
 uv run alembic upgrade head
+uv run c2-relay-operator create --name "Local Operator"
 ```
+
+Store the displayed operator credential securely. It is shown only once and is required to
+create tasks.
 
 ## Start the server
 
@@ -45,8 +49,8 @@ owner-only:
 stat -f '%Sp' agent-state.json 2>/dev/null || stat -c '%A' agent-state.json
 ```
 
-Use the agent identifier displayed in `agent-state.json` when creating tasks through Swagger UI.
-Create one task for each allowlisted action:
+In Swagger UI, select **Authorize** and enter the operator credential. Then use the agent
+identifier displayed in `agent-state.json` to create one task for each allowlisted action:
 
 ```text
 host.hostname

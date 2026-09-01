@@ -1,7 +1,22 @@
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
 import pytest
 from pydantic import ValidationError
 
-from c2_relay.models import AgentMetadata
+from c2_relay.models import AgentId, AgentMetadata, AgentStatus, RegisteredAgent
+
+NOW = datetime(2026, 9, 1, 12, tzinfo=UTC)
+AGENT_ID = AgentId(UUID("20000000-0000-4000-8000-000000000001"))
+
+
+def metadata() -> AgentMetadata:
+    return AgentMetadata(
+        hostname="relay-host",
+        operating_system="Linux",
+        username="operator",
+        agent_version="0.2.0",
+    )
 
 
 def test_agent_metadata_strips_surrounding_whitespace() -> None:
@@ -65,3 +80,62 @@ def test_agent_metadata_is_immutable() -> None:
 
     with pytest.raises(ValidationError, match="Instance is frozen"):
         metadata.__setattr__("hostname", "changed")
+
+
+def test_registered_agent_defaults_to_active() -> None:
+    agent = RegisteredAgent(
+        id=AGENT_ID,
+        metadata=metadata(),
+        created_at=NOW,
+        last_seen_at=NOW,
+    )
+
+    assert agent.status is AgentStatus.ACTIVE
+    assert agent.disabled_at is None
+
+
+def test_registered_agent_can_represent_a_disabled_identity() -> None:
+    disabled_at = NOW + timedelta(minutes=5)
+    agent = RegisteredAgent(
+        id=AGENT_ID,
+        metadata=metadata(),
+        status=AgentStatus.DISABLED,
+        created_at=NOW,
+        last_seen_at=NOW,
+        disabled_at=disabled_at,
+    )
+
+    assert agent.status is AgentStatus.DISABLED
+    assert agent.disabled_at == disabled_at
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"last_seen_at": NOW - timedelta(seconds=1)}, "last_seen_at cannot precede created_at"),
+        ({"disabled_at": NOW}, "active agent cannot have disabled_at"),
+        ({"status": AgentStatus.DISABLED}, "disabled agent requires disabled_at"),
+        (
+            {
+                "status": AgentStatus.DISABLED,
+                "last_seen_at": NOW + timedelta(minutes=2),
+                "disabled_at": NOW + timedelta(minutes=1),
+            },
+            "disabled_at cannot precede last_seen_at",
+        ),
+    ],
+)
+def test_registered_agent_rejects_impossible_lifecycle_history(
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    values: dict[str, object] = {
+        "id": AGENT_ID,
+        "metadata": metadata(),
+        "created_at": NOW,
+        "last_seen_at": NOW,
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValidationError, match=message):
+        RegisteredAgent.model_validate(values)

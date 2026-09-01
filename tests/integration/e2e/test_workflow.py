@@ -17,10 +17,13 @@ from c2_relay.core.config import Settings
 from c2_relay.db.session import create_database_engine, create_session_factory
 from c2_relay.db.uow import UnitOfWork
 from c2_relay.models import AgentMetadata, TaskId, TaskStatus
+from c2_relay.services.operators import OperatorService
 
 NOW = datetime(2026, 1, 2, 12, tzinfo=UTC)
 BOOTSTRAP_TOKEN = "b" * 32
 AGENT_CREDENTIAL = "agent-credential-" + "x" * 32
+OPERATOR_UUID = UUID("30000000-0000-4000-8000-000000000001")
+OPERATOR_CREDENTIAL = f"c2o.{OPERATOR_UUID}.{'o' * 32}"
 
 
 def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
@@ -31,6 +34,12 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
 
     engine = create_database_engine(database_url)
     factory = create_session_factory(engine)
+    OperatorService(
+        factory,
+        clock=lambda: NOW,
+        id_factory=lambda: OPERATOR_UUID,
+        credential_factory=lambda operator_id: SecretStr(OPERATOR_CREDENTIAL),
+    ).provision("Workflow Operator")
     settings = Settings(database_url=database_url, bootstrap_token=SecretStr(BOOTSTRAP_TOKEN))
     app = create_app(
         settings,
@@ -66,7 +75,7 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
 
         task_response = operator_client.post(
             "/api/v1/tasks",
-            headers={"X-Bootstrap-Token": BOOTSTRAP_TOKEN},
+            headers={"Authorization": f"Bearer {OPERATOR_CREDENTIAL}"},
             json={"agent_id": str(identity.agent_id), "action": {"kind": "host.hostname"}},
         )
         assert task_response.status_code == 201
@@ -97,3 +106,6 @@ def test_openapi_describes_versioned_routes_and_bearer_authentication(tmp_path: 
         "type": "http",
         "scheme": "bearer",
     }
+    task_operation = schema["paths"]["/api/v1/tasks"]["post"]
+    assert task_operation["security"] == [{"HTTPBearer": []}]
+    assert "parameters" not in task_operation

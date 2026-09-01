@@ -40,6 +40,7 @@ dev = [
 [project.scripts]
 c2-relay-server = "c2_relay.api.cli:main"
 c2-relay-agent = "c2_relay.agent.cli:main"
+c2-relay-operator = "c2_relay.cli.operators:main"
 
 [tool.uv]
 package = true

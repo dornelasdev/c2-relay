@@ -23,7 +23,7 @@ dist/
 *.sqlite
 *.sqlite3
 *.log
-local-notes.md
+local-notes/
 docs/project-brief.md
 agent-state.json
 agent-state.json.tmp

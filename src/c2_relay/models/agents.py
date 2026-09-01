@@ -1,8 +1,9 @@
-"""Agent identity and host metadata contracts."""
+"""Agent identity, host metadata, and lifecycle contracts."""
 
+from enum import StrEnum
 from typing import Annotated
 
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, model_validator
 
 from c2_relay.models.common import AgentId, DomainModel, UtcDateTime
 
@@ -27,8 +28,31 @@ class AgentMetadata(DomainModel):
     architecture: HostFact | None = Field(default=None)
 
 
+class AgentStatus(StrEnum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
 class RegisteredAgent(DomainModel):
     id: AgentId
     metadata: AgentMetadata
+    status: AgentStatus = AgentStatus.ACTIVE
     created_at: UtcDateTime
     last_seen_at: UtcDateTime
+    disabled_at: UtcDateTime | None = None
+
+    @model_validator(mode="after")
+    def lifecycle_timestamps_are_consistent(self) -> "RegisteredAgent":
+        if self.last_seen_at < self.created_at:
+            msg = "last_seen_at cannot precede created_at"
+            raise ValueError(msg)
+        if self.status is AgentStatus.ACTIVE and self.disabled_at is not None:
+            msg = "active agent cannot have disabled_at"
+            raise ValueError(msg)
+        if self.status is AgentStatus.DISABLED and self.disabled_at is None:
+            msg = "disabled agent requires disabled_at"
+            raise ValueError(msg)
+        if self.disabled_at is not None and self.disabled_at < self.last_seen_at:
+            msg = "disabled_at cannot precede last_seen_at"
+            raise ValueError(msg)
+        return self

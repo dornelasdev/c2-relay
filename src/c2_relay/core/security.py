@@ -1,11 +1,26 @@
 """Credential storage primitives."""
 
+from dataclasses import dataclass
 from hashlib import sha256
 from hmac import compare_digest
+from re import fullmatch
 from secrets import token_urlsafe
 from typing import NewType
+from uuid import UUID
+
+from pydantic import SecretStr
+
+from c2_relay.models.operators import OperatorId
 
 CredentialDigest = NewType("CredentialDigest", str)
+_OPERATOR_CREDENTIAL_PREFIX = "c2o"
+_OPERATOR_SECRET_PATTERN = r"[A-Za-z0-9_-]{32,128}"
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedOperatorCredential:
+    operator_id: OperatorId
+    secret: SecretStr
 
 
 def digest_credential(credential: str) -> CredentialDigest:
@@ -23,6 +38,30 @@ def credential_matches(credential: str, expected: CredentialDigest) -> bool:
 
 def generate_credential() -> str:
     return token_urlsafe(32)
+
+
+def generate_operator_credential(operator_id: OperatorId) -> SecretStr:
+    secret = token_urlsafe(32)
+    return SecretStr(f"{_OPERATOR_CREDENTIAL_PREFIX}.{operator_id}.{secret}")
+
+
+def parse_operator_credential(credential: str) -> ParsedOperatorCredential:
+    parts = credential.split(".")
+    if len(parts) != 3 or parts[0] != _OPERATOR_CREDENTIAL_PREFIX:
+        raise ValueError("invalid operator credential")
+
+    try:
+        raw_operator_id = UUID(parts[1])
+    except ValueError as error:
+        raise ValueError("invalid operator credential") from error
+
+    if parts[1] != str(raw_operator_id) or fullmatch(_OPERATOR_SECRET_PATTERN, parts[2]) is None:
+        raise ValueError("invalid operator credential")
+
+    return ParsedOperatorCredential(
+        operator_id=OperatorId(raw_operator_id),
+        secret=SecretStr(parts[2]),
+    )
 
 
 def secret_matches(provided: str, expected: str) -> bool:

@@ -9,10 +9,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials
 from starlette.middleware.base import RequestResponseEndpoint
 
 from c2_relay import __version__
+from c2_relay.api.authentication import RequireOperator, bearer, unauthorized
 from c2_relay.api.schemas import (
     ActionResultSubmission,
     ActionSuccessSubmission,
@@ -37,22 +38,15 @@ from c2_relay.models import (
     ActionResult,
     ActionSuccess,
     AgentId,
+    Operator,
     Task,
     TaskId,
     TaskStatus,
     transition_task,
 )
+from c2_relay.services.operators import OperatorService
 
 MAX_REQUEST_BYTES = 64 * 1024
-_bearer = HTTPBearer(auto_error=False)
-
-
-def _unauthorized() -> HTTPException:
-    return HTTPException(
-        status_code=HTTPStatus.UNAUTHORIZED,
-        detail="invalid credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
 
 
 def _require_bootstrap(settings: Settings, provided: str | None) -> None:
@@ -60,7 +54,7 @@ def _require_bootstrap(settings: Settings, provided: str | None) -> None:
     if configured is None:
         raise HTTPException(HTTPStatus.SERVICE_UNAVAILABLE, "bootstrap operations are disabled")
     if provided is None or not secret_matches(provided, configured.get_secret_value()):
-        raise _unauthorized()
+        raise unauthorized()
 
 
 def _require_agent(
@@ -69,11 +63,11 @@ def _require_agent(
     authorization: HTTPAuthorizationCredentials | None,
 ) -> None:
     if authorization is None or authorization.scheme.lower() != "bearer":
-        raise _unauthorized()
+        raise unauthorized()
     with UnitOfWork(factory) as uow:
         expected = uow.agents.credential_digest_for(agent_id)
         if expected is None or not credential_matches(authorization.credentials, expected):
-            raise _unauthorized()
+            raise unauthorized()
 
 
 def _router(
@@ -81,8 +75,10 @@ def _router(
     factory: SessionFactory,
     clock: Callable[[], datetime],
     credential_factory: Callable[[], str],
+    operator_service: OperatorService,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
+    require_operator = RequireOperator(operator_service)
 
     @router.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -109,7 +105,7 @@ def _router(
     @router.post("/agents/{agent_id}/check-ins", response_model=CheckInResponse)
     def check_in(
         agent_id: AgentId,
-        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
+        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
     ) -> CheckInResponse:
         _require_agent(factory, agent_id, authorization)
         with UnitOfWork(factory) as uow:
@@ -120,9 +116,9 @@ def _router(
     @router.post("/tasks", response_model=Task, status_code=201)
     def create_task(
         request: TaskCreateRequest,
-        bootstrap_token: str | None = Header(default=None, alias="X-Bootstrap-Token"),
+        operator: Annotated[Operator, Depends(require_operator)],
     ) -> Task:
-        _require_bootstrap(settings, bootstrap_token)
+        del operator
         now = clock()
         task = Task(
             id=TaskId(uuid4()),
@@ -141,7 +137,7 @@ def _router(
     @router.get("/agents/{agent_id}/tasks/next", response_model=TaskResponse)
     def next_task(
         agent_id: AgentId,
-        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
+        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
     ) -> TaskResponse:
         _require_agent(factory, agent_id, authorization)
         with UnitOfWork(factory) as uow:
@@ -157,7 +153,7 @@ def _router(
     def submit_result(
         agent_id: AgentId,
         submission: ActionResultSubmission,
-        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)] = None,
+        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
     ) -> ActionResult:
         _require_agent(factory, agent_id, authorization)
         result: ActionResult
@@ -206,6 +202,7 @@ def create_app(
     if session_factory is None:
         owned_engine = create_database_engine(resolved_settings.database_url)
         session_factory = create_session_factory(owned_engine)
+    resolved_clock = clock or (lambda: datetime.now(UTC))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -219,8 +216,9 @@ def create_app(
         _router(
             resolved_settings,
             session_factory,
-            clock or (lambda: datetime.now(UTC)),
+            resolved_clock,
             credential_factory,
+            OperatorService(session_factory, clock=resolved_clock),
         )
     )
 

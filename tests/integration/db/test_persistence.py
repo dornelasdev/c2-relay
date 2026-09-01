@@ -7,8 +7,13 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
 
 from c2_relay.core.security import digest_credential
-from c2_relay.db.repositories import AgentRepository, ResultRepository, TaskRepository
-from c2_relay.db.schema import AgentRow, Base
+from c2_relay.db.repositories import (
+    AgentRepository,
+    OperatorRepository,
+    ResultRepository,
+    TaskRepository,
+)
+from c2_relay.db.schema import AgentRow, Base, OperatorRow
 from c2_relay.db.session import create_database_engine, create_session_factory
 from c2_relay.db.uow import UnitOfWork
 from c2_relay.models import (
@@ -20,6 +25,8 @@ from c2_relay.models import (
     ErrorDetail,
     HostnameAction,
     HostnameOutput,
+    Operator,
+    OperatorId,
     Task,
     TaskId,
     TaskStatus,
@@ -29,6 +36,7 @@ from c2_relay.models import (
 NOW = datetime(2026, 1, 2, 12, tzinfo=UTC)
 AGENT_ID = AgentId(UUID("20000000-0000-4000-8000-000000000001"))
 TASK_ID = TaskId(UUID("10000000-0000-4000-8000-000000000001"))
+OPERATOR_ID = OperatorId(UUID("30000000-0000-4000-8000-000000000001"))
 
 
 @pytest.fixture
@@ -59,6 +67,10 @@ def task() -> Task:
     )
 
 
+def operator() -> Operator:
+    return Operator(id=OPERATOR_ID, name="Primary Operator", created_at=NOW)
+
+
 def add_agent(repository: AgentRepository) -> None:
     repository.add(AGENT_ID, metadata(), digest_credential("token"), now=NOW)
 
@@ -83,6 +95,37 @@ def test_agent_repository_cannot_touch_a_missing_agent(engine: Engine) -> None:
     factory = create_session_factory(engine)
     with factory() as session, pytest.raises(KeyError):
         AgentRepository(session).touch(AgentId(UUID(int=0)), now=NOW)
+
+
+def test_operator_repository_round_trip_and_authentication_update(engine: Engine) -> None:
+    factory = create_session_factory(engine)
+    digest = digest_credential("operator-secret")
+    with factory() as session:
+        repository = OperatorRepository(session)
+        repository.add(operator(), digest)
+        session.commit()
+
+        assert repository.get(OPERATOR_ID) == operator()
+        assert repository.get(OperatorId(UUID(int=0))) is None
+        assert repository.credential_digest_for(OPERATOR_ID) == digest
+        assert repository.credential_digest_for(OperatorId(UUID(int=0))) is None
+
+        authenticated_at = NOW + timedelta(seconds=1)
+        authenticated = repository.mark_authenticated(OPERATOR_ID, now=authenticated_at)
+        session.commit()
+        assert authenticated.last_authenticated_at == authenticated_at
+        assert repository.get(OPERATOR_ID) == authenticated
+
+        stored = session.get(OperatorRow, OPERATOR_ID)
+        assert stored is not None
+        assert stored.credential_digest == digest
+        assert stored.credential_digest != "operator-secret"
+
+
+def test_operator_repository_rejects_missing_authentication_update(engine: Engine) -> None:
+    factory = create_session_factory(engine)
+    with factory() as session, pytest.raises(KeyError):
+        OperatorRepository(session).mark_authenticated(OperatorId(UUID(int=0)), now=NOW)
 
 
 def test_sqlite_foreign_keys_are_enabled(engine: Engine) -> None:
@@ -156,10 +199,12 @@ def test_unit_of_work_commits_and_rolls_back(engine: Engine) -> None:
     factory = create_session_factory(engine)
     with UnitOfWork(factory) as uow:
         uow.agents.add(AGENT_ID, metadata(), digest_credential("token"), now=NOW)
+        uow.operators.add(operator(), digest_credential("operator-secret"))
         uow.commit()
 
     with UnitOfWork(factory) as uow:
         assert uow.agents.get(AGENT_ID) is not None
+        assert uow.operators.get(OPERATOR_ID) == operator()
         uow.tasks.add(task())
         uow.rollback()
 

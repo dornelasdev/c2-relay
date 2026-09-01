@@ -12,9 +12,12 @@ from c2_relay.api import create_app
 from c2_relay.core.config import Settings
 from c2_relay.db.schema import Base
 from c2_relay.db.session import create_database_engine, create_session_factory
+from c2_relay.services.operators import OperatorService
 
 NOW = datetime(2026, 1, 2, 12, tzinfo=UTC)
 BOOTSTRAP_TOKEN = "b" * 32
+OPERATOR_UUID = UUID("30000000-0000-4000-8000-000000000001")
+OPERATOR_CREDENTIAL = f"c2o.{OPERATOR_UUID}.{'o' * 32}"
 AGENT_METADATA = {
     "hostname": "relay-host",
     "operating_system": "Linux",
@@ -29,6 +32,12 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     engine = create_database_engine(f"sqlite+pysqlite:///{tmp_path / 'api.db'}")
     Base.metadata.create_all(engine)
     factory = create_session_factory(engine)
+    OperatorService(
+        factory,
+        clock=lambda: NOW,
+        id_factory=lambda: OPERATOR_UUID,
+        credential_factory=lambda operator_id: SecretStr(OPERATOR_CREDENTIAL),
+    ).provision("API Operator")
     settings = Settings(
         database_url=str(engine.url),
         bootstrap_token=SecretStr(BOOTSTRAP_TOKEN),
@@ -63,10 +72,14 @@ def agent_headers(credential: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {credential}"}
 
 
+def operator_headers(credential: str = OPERATOR_CREDENTIAL) -> dict[str, str]:
+    return {"Authorization": f"Bearer {credential}"}
+
+
 def create_task(client: TestClient, agent_id: str, kind: str = "host.hostname") -> dict[str, Any]:
     response = client.post(
         "/api/v1/tasks",
-        headers=bootstrap_headers(),
+        headers=operator_headers(),
         json={"agent_id": agent_id, "action": {"kind": kind}},
     )
     assert response.status_code == 201
@@ -135,7 +148,7 @@ def test_agent_check_in_requires_its_own_bearer_credential(client: TestClient) -
 def test_task_creation_rejects_an_unknown_agent(client: TestClient) -> None:
     response = client.post(
         "/api/v1/tasks",
-        headers=bootstrap_headers(),
+        headers=operator_headers(),
         json={
             "agent_id": "00000000-0000-0000-0000-000000000000",
             "action": {"kind": "host.hostname"},
@@ -143,6 +156,29 @@ def test_task_creation_rejects_an_unknown_agent(client: TestClient) -> None:
     )
 
     assert response.status_code == 404
+
+
+def test_task_creation_requires_an_active_operator_credential(client: TestClient) -> None:
+    agent_id, _ = enroll(client)
+    route = "/api/v1/tasks"
+    payload = {"agent_id": agent_id, "action": {"kind": "host.hostname"}}
+    unknown_id = UUID("30000000-0000-4000-8000-000000000099")
+    invalid_headers: tuple[dict[str, str], ...] = (
+        {},
+        bootstrap_headers(),
+        operator_headers("not-an-operator-credential"),
+        operator_headers(f"c2o.{OPERATOR_UUID}.{'z' * 32}"),
+        operator_headers(f"c2o.{unknown_id}.{'z' * 32}"),
+        {"Authorization": "Basic abc"},
+    )
+
+    for headers in invalid_headers:
+        response = client.post(route, headers=headers, json=payload)
+        assert response.status_code == 401
+        assert response.json() == {"detail": "invalid credentials"}
+        assert response.headers["www-authenticate"] == "Bearer"
+
+    assert client.post(route, headers=operator_headers(), json=payload).status_code == 201
 
 
 def test_polling_claims_oldest_task_once(client: TestClient) -> None:

@@ -7,11 +7,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from c2_relay.core.security import CredentialDigest
-from c2_relay.db.schema import AgentRow, TaskResultRow, TaskRow
+from c2_relay.db.schema import AgentRow, OperatorRow, TaskResultRow, TaskRow
 from c2_relay.models import (
     ActionResult,
     AgentId,
     AgentMetadata,
+    Operator,
+    OperatorId,
+    OperatorStatus,
     RegisteredAgent,
     Task,
     TaskId,
@@ -75,6 +78,50 @@ class AgentRepository:
             ),
             created_at=row.created_at,
             last_seen_at=row.last_seen_at,
+        )
+
+
+class OperatorRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, operator: Operator, credential_digest: CredentialDigest) -> None:
+        self._session.add(
+            OperatorRow(
+                id=operator.id,
+                name=operator.name,
+                credential_digest=credential_digest,
+                status=operator.status.value,
+                created_at=operator.created_at,
+                last_authenticated_at=operator.last_authenticated_at,
+            )
+        )
+        self._session.flush()
+
+    def get(self, operator_id: OperatorId) -> Operator | None:
+        row = self._session.get(OperatorRow, operator_id)
+        return None if row is None else self._to_domain(row)
+
+    def credential_digest_for(self, operator_id: OperatorId) -> CredentialDigest | None:
+        row = self._session.get(OperatorRow, operator_id)
+        return None if row is None else CredentialDigest(row.credential_digest)
+
+    def mark_authenticated(self, operator_id: OperatorId, *, now: datetime) -> Operator:
+        row = self._session.get(OperatorRow, operator_id)
+        if row is None:
+            raise KeyError(operator_id)
+        row.last_authenticated_at = now
+        self._session.flush()
+        return self._to_domain(row)
+
+    @staticmethod
+    def _to_domain(row: OperatorRow) -> Operator:
+        return Operator(
+            id=OperatorId(row.id),
+            name=row.name,
+            status=OperatorStatus(row.status),
+            created_at=row.created_at,
+            last_authenticated_at=row.last_authenticated_at,
         )
 
 

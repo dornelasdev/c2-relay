@@ -28,6 +28,20 @@ class AgentRow(Base):
     last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
 
 
+class OperatorRow(Base):
+    __tablename__ = "operators"
+    __table_args__ = (
+        CheckConstraint("status IN ('active','disabled')", name="ck_operators_status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    credential_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    last_authenticated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
 class TaskRow(Base):
     __tablename__ = "tasks"
     __table_args__ = (
