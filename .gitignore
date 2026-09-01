@@ -27,6 +27,9 @@ local-notes/
 docs/project-brief.md
 agent-state.json
 agent-state.json.tmp
+.agent-state.json.*.tmp
+pending-result.json
+.pending-result.json.*.tmp
 
 # Editors and operating systems
 .DS_Store

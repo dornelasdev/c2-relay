@@ -4,7 +4,14 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from c2_relay.models import AgentId, AgentMetadata, AgentStatus, RegisteredAgent
+from c2_relay.models import (
+    AgentId,
+    AgentMetadata,
+    AgentStatus,
+    InvalidAgentTransitionError,
+    RegisteredAgent,
+    disable_agent,
+)
 
 NOW = datetime(2026, 9, 1, 12, tzinfo=UTC)
 AGENT_ID = AgentId(UUID("20000000-0000-4000-8000-000000000001"))
@@ -139,3 +146,33 @@ def test_registered_agent_rejects_impossible_lifecycle_history(
 
     with pytest.raises(ValidationError, match=message):
         RegisteredAgent.model_validate(values)
+
+
+def test_disable_agent_returns_a_new_disabled_identity() -> None:
+    agent = RegisteredAgent(
+        id=AGENT_ID,
+        metadata=metadata(),
+        created_at=NOW,
+        last_seen_at=NOW,
+    )
+    disabled_at = NOW + timedelta(minutes=1)
+
+    disabled = disable_agent(agent, at=disabled_at)
+
+    assert agent.status is AgentStatus.ACTIVE
+    assert disabled.status is AgentStatus.DISABLED
+    assert disabled.disabled_at == disabled_at
+
+
+def test_disable_agent_rejects_an_invalid_transition() -> None:
+    agent = RegisteredAgent(
+        id=AGENT_ID,
+        metadata=metadata(),
+        status=AgentStatus.DISABLED,
+        created_at=NOW,
+        last_seen_at=NOW,
+        disabled_at=NOW,
+    )
+
+    with pytest.raises(InvalidAgentTransitionError, match="only active agents"):
+        disable_agent(agent, at=NOW)

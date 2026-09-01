@@ -11,7 +11,13 @@ from c2_relay.models.actions import (
     OperatingSystemAction,
     OperatingSystemOutput,
 )
-from c2_relay.models.agents import AgentMetadata, AgentStatus, RegisteredAgent
+from c2_relay.models.agents import (
+    AgentMetadata,
+    AgentStatus,
+    InvalidAgentTransitionError,
+    RegisteredAgent,
+    disable_agent,
+)
 from c2_relay.models.common import AgentId, DomainModel, TaskId, UtcDateTime
 from c2_relay.models.operators import Operator, OperatorId, OperatorStatus
 from c2_relay.models.results import ActionFailure, ActionResult, ActionSuccess, ErrorDetail
@@ -33,6 +39,7 @@ __all__ = [
     "ErrorDetail",
     "HostnameAction",
     "HostnameOutput",
+    "InvalidAgentTransitionError",
     "InvalidTaskTransitionError",
     "OperatingSystemAction",
     "OperatingSystemOutput",
@@ -44,5 +51,6 @@ __all__ = [
     "TaskId",
     "TaskStatus",
     "UtcDateTime",
+    "disable_agent",
     "transition_task",
 ]

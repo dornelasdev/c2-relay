@@ -16,6 +16,7 @@ class Base(DeclarativeBase):
 
 class AgentRow(Base):
     __tablename__ = "agents"
+    __table_args__ = (CheckConstraint("status IN ('active','disabled')", name="ck_agents_status"),)
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     credential_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -24,8 +25,10 @@ class AgentRow(Base):
     username: Mapped[str] = mapped_column(String(255), nullable=False)
     agent_version: Mapped[str] = mapped_column(String(32), nullable=False)
     architecture: Mapped[str | None] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(16), server_default="active", nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    disabled_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class OperatorRow(Base):
@@ -60,6 +63,7 @@ class TaskRow(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class TaskResultRow(Base):

@@ -17,6 +17,8 @@ def test_settings_have_local_development_defaults(
     assert settings.bootstrap_token is None
     assert settings.server_host == "127.0.0.1"
     assert settings.server_port == 8000
+    assert settings.task_lease_seconds == 30.0
+    assert settings.agent_result_path == Path("pending-result.json")
 
 
 def test_settings_read_prefixed_environment(

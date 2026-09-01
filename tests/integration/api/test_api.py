@@ -27,14 +27,30 @@ AGENT_METADATA = {
 }
 
 
+class MutableClock:
+    def __init__(self) -> None:
+        self.current = NOW
+
+    def __call__(self) -> datetime:
+        return self.current
+
+    def advance(self, delta: timedelta) -> None:
+        self.current += delta
+
+
 @pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
+def clock() -> MutableClock:
+    return MutableClock()
+
+
+@pytest.fixture
+def client(tmp_path: Path, clock: MutableClock) -> Iterator[TestClient]:
     engine = create_database_engine(f"sqlite+pysqlite:///{tmp_path / 'api.db'}")
     Base.metadata.create_all(engine)
     factory = create_session_factory(engine)
     OperatorService(
         factory,
-        clock=lambda: NOW,
+        clock=clock,
         id_factory=lambda: OPERATOR_UUID,
         credential_factory=lambda operator_id: SecretStr(OPERATOR_CREDENTIAL),
     ).provision("API Operator")
@@ -45,7 +61,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
     app = create_app(
         settings,
         factory,
-        clock=lambda: NOW,
+        clock=clock,
         credential_factory=lambda: "agent-credential-" + "x" * 32,
     )
     with TestClient(app) as test_client:
@@ -181,6 +197,48 @@ def test_task_creation_requires_an_active_operator_credential(client: TestClient
     assert client.post(route, headers=operator_headers(), json=payload).status_code == 201
 
 
+def test_operator_can_disable_an_agent_and_revoke_its_access(client: TestClient) -> None:
+    agent_id, credential = enroll(client)
+    disable_route = f"/api/v1/agents/{agent_id}/disable"
+
+    assert client.post(disable_route).status_code == 401
+    assert client.post(disable_route, headers=agent_headers(credential)).status_code == 401
+
+    response = client.post(disable_route, headers=operator_headers())
+    assert response.status_code == 200
+    assert response.json()["status"] == "disabled"
+    assert response.json()["disabled_at"] == NOW.isoformat().replace("+00:00", "Z")
+
+    repeated = client.post(disable_route, headers=operator_headers())
+    assert repeated.status_code == 200
+    assert repeated.json() == response.json()
+
+    check_in = client.post(
+        f"/api/v1/agents/{agent_id}/check-ins",
+        headers=agent_headers(credential),
+    )
+    assert check_in.status_code == 401
+    assert check_in.json() == {"detail": "invalid credentials"}
+
+    task = client.post(
+        "/api/v1/tasks",
+        headers=operator_headers(),
+        json={"agent_id": agent_id, "action": {"kind": "host.hostname"}},
+    )
+    assert task.status_code == 409
+    assert task.json() == {"detail": "agent is disabled"}
+
+
+def test_disabling_an_unknown_agent_returns_not_found(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/agents/00000000-0000-0000-0000-000000000000/disable",
+        headers=operator_headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "agent not found"}
+
+
 def test_polling_claims_oldest_task_once(client: TestClient) -> None:
     agent_id, credential = enroll(client)
     created = create_task(client, agent_id)
@@ -188,12 +246,42 @@ def test_polling_claims_oldest_task_once(client: TestClient) -> None:
     claimed = claim_task(client, agent_id, credential)
     assert claimed["id"] == created["id"]
     assert claimed["status"] == "claimed"
+    assert claimed["lease_expires_at"] is not None
 
     empty = client.get(
         f"/api/v1/agents/{agent_id}/tasks/next",
         headers=agent_headers(credential),
     )
     assert empty.json() == {"task": None}
+
+
+def test_expired_claim_is_rejected_then_recovered(
+    client: TestClient,
+    clock: MutableClock,
+) -> None:
+    agent_id, credential = enroll(client)
+    create_task(client, agent_id)
+    claimed = claim_task(client, agent_id, credential)
+    clock.advance(timedelta(seconds=31))
+    result = {
+        "status": "completed",
+        "task_id": claimed["id"],
+        "agent_id": agent_id,
+        "completed_at": NOW.isoformat(),
+        "output": {"kind": "host.hostname", "hostname": "relay-host"},
+    }
+
+    expired = client.post(
+        f"/api/v1/agents/{agent_id}/results",
+        headers=agent_headers(credential),
+        json=result,
+    )
+    assert expired.status_code == 409
+    assert expired.json() == {"detail": "task lease has expired"}
+
+    recovered = claim_task(client, agent_id, credential)
+    assert recovered["id"] == claimed["id"]
+    assert recovered["lease_expires_at"] != claimed["lease_expires_at"]
 
 
 def test_completed_result_is_persisted_and_idempotent(client: TestClient) -> None:

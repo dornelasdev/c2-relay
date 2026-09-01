@@ -1,5 +1,8 @@
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from threading import Barrier
 from uuid import UUID
 
 import pytest
@@ -22,14 +25,17 @@ from c2_relay.models import (
     ActionSuccess,
     AgentId,
     AgentMetadata,
+    AgentStatus,
     ErrorDetail,
     HostnameAction,
     HostnameOutput,
     Operator,
     OperatorId,
+    RegisteredAgent,
     Task,
     TaskId,
     TaskStatus,
+    disable_agent,
     transition_task,
 )
 
@@ -89,12 +95,44 @@ def test_agent_repository_round_trip_and_missing_lookup(engine: Engine) -> None:
         assert stored is not None
         assert stored.credential_digest == digest_credential("token")
         assert stored.credential_digest != "token"
+        assert stored.status == AgentStatus.ACTIVE.value
+        assert stored.disabled_at is None
+
+
+def test_agent_repository_persists_lifecycle_updates(engine: Engine) -> None:
+    factory = create_session_factory(engine)
+    with factory() as session:
+        repository = AgentRepository(session)
+        registered = repository.add(AGENT_ID, metadata(), digest_credential("token"), now=NOW)
+        disabled = disable_agent(registered, at=NOW + timedelta(minutes=1))
+        repository.update_lifecycle(disabled)
+        session.commit()
+
+        assert repository.get(AGENT_ID) == disabled
+        stored = session.get(AgentRow, AGENT_ID)
+        assert stored is not None
+        assert stored.status == AgentStatus.DISABLED.value
+        assert stored.disabled_at == disabled.disabled_at
 
 
 def test_agent_repository_cannot_touch_a_missing_agent(engine: Engine) -> None:
     factory = create_session_factory(engine)
     with factory() as session, pytest.raises(KeyError):
         AgentRepository(session).touch(AgentId(UUID(int=0)), now=NOW)
+
+
+def test_agent_repository_cannot_update_a_missing_agent(engine: Engine) -> None:
+    factory = create_session_factory(engine)
+    missing = RegisteredAgent(
+        id=AgentId(UUID(int=0)),
+        metadata=metadata(),
+        status=AgentStatus.DISABLED,
+        created_at=NOW,
+        last_seen_at=NOW,
+        disabled_at=NOW,
+    )
+    with factory() as session, pytest.raises(KeyError):
+        AgentRepository(session).update_lifecycle(missing)
 
 
 def test_operator_repository_round_trip_and_authentication_update(engine: Engine) -> None:
@@ -146,7 +184,12 @@ def test_task_repository_round_trip_update_and_missing_paths(engine: Engine) -> 
         assert tasks.get(TaskId(UUID(int=0))) is None
 
         running = transition_task(
-            transition_task(task(), TaskStatus.CLAIMED, at=NOW + timedelta(seconds=1)),
+            transition_task(
+                task(),
+                TaskStatus.CLAIMED,
+                at=NOW + timedelta(seconds=1),
+                lease_expires_at=NOW + timedelta(seconds=31),
+            ),
             TaskStatus.RUNNING,
             at=NOW + timedelta(seconds=2),
         )
@@ -156,6 +199,70 @@ def test_task_repository_round_trip_update_and_missing_paths(engine: Engine) -> 
 
         with pytest.raises(KeyError):
             tasks.update(running.model_copy(update={"id": TaskId(UUID(int=0))}))
+
+
+def test_task_repository_claims_and_recovers_expired_work(engine: Engine) -> None:
+    factory = create_session_factory(engine)
+    lease_duration = timedelta(seconds=30)
+    with factory() as session:
+        agents = AgentRepository(session)
+        tasks = TaskRepository(session)
+        add_agent(agents)
+        tasks.add(task())
+        session.commit()
+
+        claimed = tasks.claim_next(AGENT_ID, now=NOW, lease_duration=lease_duration)
+        session.commit()
+        assert claimed is not None
+        assert claimed.status is TaskStatus.CLAIMED
+        assert claimed.lease_expires_at == NOW + lease_duration
+        assert tasks.claim_next(AGENT_ID, now=NOW, lease_duration=lease_duration) is None
+
+        recovered = tasks.claim_next(
+            AGENT_ID,
+            now=NOW + lease_duration,
+            lease_duration=lease_duration,
+        )
+        session.commit()
+        assert recovered is not None
+        assert recovered.id == claimed.id
+        assert recovered.lease_expires_at == NOW + lease_duration * 2
+
+        with pytest.raises(ValueError, match="lease_duration must be positive"):
+            tasks.claim_next(AGENT_ID, now=NOW, lease_duration=timedelta(0))
+
+
+def test_sqlite_claim_is_atomic_for_concurrent_pollers(tmp_path: Path) -> None:
+    engine = create_database_engine(f"sqlite+pysqlite:///{tmp_path / 'claims.db'}")
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    second_id = TaskId(UUID("10000000-0000-4000-8000-000000000002"))
+    with factory() as session:
+        agents = AgentRepository(session)
+        tasks = TaskRepository(session)
+        add_agent(agents)
+        tasks.add(task())
+        tasks.add(task().model_copy(update={"id": second_id}))
+        session.commit()
+
+    barrier = Barrier(2)
+
+    def claim() -> TaskId | None:
+        with factory() as session:
+            barrier.wait()
+            claimed = TaskRepository(session).claim_next(
+                AGENT_ID,
+                now=NOW,
+                lease_duration=timedelta(seconds=30),
+            )
+            session.commit()
+            return None if claimed is None else claimed.id
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claimed_ids = set(executor.map(lambda _: claim(), range(2)))
+
+    assert claimed_ids == {TASK_ID, second_id}
+    engine.dispose()
 
 
 @pytest.mark.parametrize("failed", [False, True])

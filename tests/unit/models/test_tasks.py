@@ -42,6 +42,7 @@ def make_task(status: TaskStatus = TaskStatus.QUEUED) -> Task:
         status=status,
         created_at=NOW,
         updated_at=NOW,
+        lease_expires_at=NOW + timedelta(seconds=30) if status is TaskStatus.CLAIMED else None,
     )
 
 
@@ -80,10 +81,19 @@ def test_task_allows_declared_transitions(current: TaskStatus, requested: TaskSt
     task = make_task(current)
     changed_at = NOW + timedelta(seconds=1)
 
-    transitioned = transition_task(task, requested, at=changed_at)
+    lease_expires_at = changed_at + timedelta(seconds=30)
+    transitioned = transition_task(
+        task,
+        requested,
+        at=changed_at,
+        lease_expires_at=lease_expires_at if requested is TaskStatus.CLAIMED else None,
+    )
 
     assert transitioned.status is requested
     assert transitioned.updated_at == changed_at
+    assert transitioned.lease_expires_at == (
+        lease_expires_at if requested is TaskStatus.CLAIMED else None
+    )
     assert task.status is current
 
 
@@ -108,4 +118,34 @@ def test_task_rejects_undeclared_transitions(current: TaskStatus, requested: Tas
 @pytest.mark.parametrize("at", [NOW - timedelta(seconds=1), datetime(2026, 1, 2, 13)])
 def test_transition_revalidates_its_timestamp(at: datetime) -> None:
     with pytest.raises(ValidationError):
-        transition_task(make_task(), TaskStatus.CLAIMED, at=at)
+        transition_task(
+            make_task(),
+            TaskStatus.CLAIMED,
+            at=at,
+            lease_expires_at=NOW + timedelta(seconds=30),
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "lease_expires_at", "message"),
+    [
+        (TaskStatus.CLAIMED, None, "claimed task requires lease_expires_at"),
+        (TaskStatus.QUEUED, NOW + timedelta(seconds=30), "only claimed task"),
+        (TaskStatus.CLAIMED, NOW, "lease_expires_at must follow updated_at"),
+    ],
+)
+def test_task_rejects_invalid_lease_state(
+    status: TaskStatus,
+    lease_expires_at: datetime | None,
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        Task(
+            id=TASK_ID,
+            agent_id=AGENT_ID,
+            action=HostnameAction(),
+            status=status,
+            created_at=NOW,
+            updated_at=NOW,
+            lease_expires_at=lease_expires_at,
+        )

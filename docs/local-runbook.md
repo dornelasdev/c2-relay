@@ -18,6 +18,9 @@ uv run c2-relay-operator create --name "Local Operator"
 Store the displayed operator credential securely. It is shown only once and is required to
 create tasks.
 
+The default task claim lease is 30 seconds. It can be changed with
+`C2_RELAY_TASK_LEASE_SECONDS`; keep it longer than the expected action and result-submission time.
+
 ## Start the server
 
 In the first terminal:
@@ -49,6 +52,10 @@ owner-only:
 stat -f '%Sp' agent-state.json 2>/dev/null || stat -c '%A' agent-state.json
 ```
 
+If result submission is interrupted, the agent temporarily stores `pending-result.json` with the
+same owner-only permissions. The file is removed after successful delivery or a permanent stale
+result response.
+
 In Swagger UI, select **Authorize** and enter the operator credential. Then use the agent
 identifier displayed in `agent-state.json` to create one task for each allowlisted action:
 
@@ -67,6 +74,9 @@ sqlite3 c2-relay.db \
 sqlite3 c2-relay.db \
   "SELECT task_id, status, completed_at FROM task_results ORDER BY completed_at;"
 ```
+
+The operator-authenticated `POST /api/v1/agents/{agent_id}/disable` endpoint can revoke an agent.
+Afterward, that agent's credential must receive `401` and task creation for it must receive `409`.
 
 Stop the agent and server with `Ctrl-C`, restart both, and confirm the agent reuses its existing
 identity rather than enrolling again.

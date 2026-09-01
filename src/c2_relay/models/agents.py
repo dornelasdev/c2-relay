@@ -1,5 +1,6 @@
 """Agent identity, host metadata, and lifecycle contracts."""
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Annotated
 
@@ -56,3 +57,15 @@ class RegisteredAgent(DomainModel):
             msg = "disabled_at cannot precede last_seen_at"
             raise ValueError(msg)
         return self
+
+
+class InvalidAgentTransitionError(ValueError):
+    """Raised when a requested agent state change violates the lifecycle."""
+
+
+def disable_agent(agent: RegisteredAgent, *, at: datetime) -> RegisteredAgent:
+    if agent.status is not AgentStatus.ACTIVE:
+        raise InvalidAgentTransitionError("only active agents can be disabled")
+    values = agent.model_dump()
+    values.update(status=AgentStatus.DISABLED, disabled_at=at)
+    return RegisteredAgent.model_validate(values)

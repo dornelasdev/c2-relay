@@ -34,8 +34,8 @@ claimed -> queued | running | expired | cancelled
 running -> completed | failed | cancelled
 ```
 
-Completed, failed, expired, and cancelled tasks are terminal. A claimed task may return to the
-queue so a future lease mechanism can safely recover abandoned work.
+Completed, failed, expired, and cancelled tasks are terminal. A claim carries a bounded lease;
+expired claims return to the queue during the agent's next poll.
 
 ## Configuration
 
@@ -43,12 +43,20 @@ Runtime settings use the `C2_RELAY_` environment prefix and may be loaded from a
 file. Development defaults use a local SQLite database; `.env` files and database files are
 excluded from version control.
 
+Alembic and the API both resolve `Settings.database_url`, so migration commands and the running
+server target the same configured database. Programmatic migration tests use an explicit Alembic
+attribute override to remain isolated from developer configuration.
+
 ## Persistence
 
 SQLAlchemy provides synchronous relational mappings for agents, tasks, and task results. The
 application owns transactions through an explicit unit of work; repositories never commit
 implicitly. Alembic migrations are the only supported mechanism for creating or evolving an
 operational database.
+
+Task polling uses a conditional `UPDATE ... RETURNING` claim rather than row-lock syntax that
+SQLite ignores. Concurrent pollers therefore claim different queued tasks. Expired claims are
+requeued in the same transaction before the next task is selected.
 
 SQLite stores timestamps without timezone information, so a custom column type converts aware
 timestamps to naive UTC at the storage boundary and restores aware UTC values on reads. Foreign
@@ -69,8 +77,12 @@ delegates persistence to a unit of work; it does not redefine domain lifecycle r
 - Enrollment issues a high-entropy agent credential once and persists only its SHA-256 digest.
 - Operator provisioning also displays its credential once and persists only the secret digest.
 - Check-in, task polling, and result submission require the enrolled agent's bearer credential.
-- Polling claims a queued task once. Results must match the authenticated agent, claimed task,
-  and requested action. Repeating an identical result is idempotent; conflicting results fail.
+- An authenticated operator can disable an agent. Disabled agents cannot authenticate or receive
+  newly queued tasks, and repeating the disable operation is safe.
+- Polling atomically claims queued work with a configurable lease. Late results are rejected and
+  expired claims are recovered on the next poll. Results must match the authenticated agent,
+  claimed task, and requested action. Repeating an identical result is idempotent; conflicting
+  results fail.
 - Request bodies advertised above 64 KiB are rejected before parsing.
 
 The development server binds to localhost by default. TLS is an external deployment requirement;
@@ -80,12 +92,24 @@ c2-relay does not claim secure network transport when served directly over plain
 
 The agent maintains one long-lived HTTPX2 client with bounded request timeouts. It enrolls once,
 stores the issued identity through an atomic owner-only file, checks in, polls for one task, and
-submits a structured result. Identical submissions are safe to retry at the server boundary.
+submits a structured result. Before submission, the result is written to an owner-only local
+outbox. A restarted agent delivers pending work before checking in or polling again. Identical
+submissions are safe to retry at the server boundary; stale `404` or `409` results are discarded
+so lease recovery can proceed.
 
 The action registry maps the three domain action kinds directly to Python standard-library host
 inspection functions. There is no subprocess, shell, dynamic import, or arbitrary command path.
-Transport failures use capped exponential backoff with jitter, and signal-driven shutdown uses an
-interruptible event wait rather than an uninterruptible sleep.
+Initial enrollment and later transient HTTP failures use capped exponential backoff with jitter.
+Authentication rejection (`401` or `403`) is permanent and stops the runtime instead of retrying
+a revoked credential. Signal-driven shutdown uses an interruptible event wait rather than an
+uninterruptible sleep.
+
+Lease recovery provides at-least-once execution. This is acceptable for the current read-only
+actions; mutating actions would additionally require a unique claim token and idempotency key.
+
+Identity and outbox files share an atomic JSON writer that uses uniquely created temporary files,
+atomic replacement, and `0600` permissions. This avoids predictable temporary-file names and
+prevents partial JSON from becoming active state.
 
 ## Supported environments
 

@@ -1,9 +1,9 @@
 """Mappings between domain contracts and relational rows."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pydantic import TypeAdapter
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from c2_relay.core.security import CredentialDigest
@@ -12,6 +12,7 @@ from c2_relay.models import (
     ActionResult,
     AgentId,
     AgentMetadata,
+    AgentStatus,
     Operator,
     OperatorId,
     OperatorStatus,
@@ -41,8 +42,10 @@ class AgentRepository:
         row = AgentRow(
             id=agent_id,
             credential_digest=credential_digest,
+            status=AgentStatus.ACTIVE.value,
             created_at=now,
             last_seen_at=now,
+            disabled_at=None,
             **metadata.model_dump(),
         )
         self._session.add(row)
@@ -65,6 +68,14 @@ class AgentRepository:
         self._session.flush()
         return self._to_domain(row)
 
+    def update_lifecycle(self, agent: RegisteredAgent) -> None:
+        row = self._session.get(AgentRow, agent.id)
+        if row is None:
+            raise KeyError(agent.id)
+        row.status = agent.status.value
+        row.disabled_at = agent.disabled_at
+        self._session.flush()
+
     @staticmethod
     def _to_domain(row: AgentRow) -> RegisteredAgent:
         return RegisteredAgent(
@@ -76,8 +87,10 @@ class AgentRepository:
                 agent_version=row.agent_version,
                 architecture=row.architecture,
             ),
+            status=AgentStatus(row.status),
             created_at=row.created_at,
             last_seen_at=row.last_seen_at,
+            disabled_at=row.disabled_at,
         )
 
 
@@ -138,6 +151,7 @@ class TaskRepository:
                 status=task.status.value,
                 created_at=task.created_at,
                 updated_at=task.updated_at,
+                lease_expires_at=task.lease_expires_at,
             )
         )
         self._session.flush()
@@ -153,6 +167,7 @@ class TaskRepository:
             status=TaskStatus(row.status),
             created_at=row.created_at,
             updated_at=row.updated_at,
+            lease_expires_at=row.lease_expires_at,
         )
 
     def update(self, task: Task) -> None:
@@ -161,17 +176,54 @@ class TaskRepository:
             raise KeyError(task.id)
         row.status = task.status.value
         row.updated_at = task.updated_at
+        row.lease_expires_at = task.lease_expires_at
         self._session.flush()
 
-    def next_queued(self, agent_id: AgentId) -> Task | None:
-        row = self._session.scalar(
-            select(TaskRow)
-            .where(TaskRow.agent_id == agent_id, TaskRow.status == "queued")
+    def claim_next(
+        self,
+        agent_id: AgentId,
+        *,
+        now: datetime,
+        lease_duration: timedelta,
+    ) -> Task | None:
+        if lease_duration <= timedelta(0):
+            raise ValueError("lease_duration must be positive")
+
+        self._session.execute(
+            update(TaskRow)
+            .where(
+                TaskRow.agent_id == agent_id,
+                TaskRow.status == TaskStatus.CLAIMED.value,
+                TaskRow.lease_expires_at <= now,
+            )
+            .values(
+                status=TaskStatus.QUEUED.value,
+                updated_at=now,
+                lease_expires_at=None,
+            )
+        )
+        candidate = (
+            select(TaskRow.id)
+            .where(TaskRow.agent_id == agent_id, TaskRow.status == TaskStatus.QUEUED.value)
             .order_by(TaskRow.created_at, TaskRow.id)
             .limit(1)
-            .with_for_update(skip_locked=True)
+            .scalar_subquery()
         )
-        return None if row is None else self.get(TaskId(row.id))
+        claimed_id = self._session.scalar(
+            update(TaskRow)
+            .where(
+                TaskRow.id == candidate,
+                TaskRow.status == TaskStatus.QUEUED.value,
+            )
+            .values(
+                status=TaskStatus.CLAIMED.value,
+                updated_at=now,
+                lease_expires_at=now + lease_duration,
+            )
+            .returning(TaskRow.id)
+        )
+        self._session.flush()
+        return None if claimed_id is None else self.get(TaskId(claimed_id))
 
 
 class ResultRepository:

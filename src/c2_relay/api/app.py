@@ -2,7 +2,7 @@
 
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from typing import Annotated
 from uuid import uuid4
@@ -38,15 +38,19 @@ from c2_relay.models import (
     ActionResult,
     ActionSuccess,
     AgentId,
+    AgentStatus,
     Operator,
+    RegisteredAgent,
     Task,
     TaskId,
     TaskStatus,
+    disable_agent,
     transition_task,
 )
 from c2_relay.services.operators import OperatorService
 
 MAX_REQUEST_BYTES = 64 * 1024
+_DUMMY_AGENT_DIGEST = digest_credential("x" * 32)
 
 
 def _require_bootstrap(settings: Settings, provided: str | None) -> None:
@@ -65,8 +69,13 @@ def _require_agent(
     if authorization is None or authorization.scheme.lower() != "bearer":
         raise unauthorized()
     with UnitOfWork(factory) as uow:
+        agent = uow.agents.get(agent_id)
         expected = uow.agents.credential_digest_for(agent_id)
-        if expected is None or not credential_matches(authorization.credentials, expected):
+        matches = credential_matches(
+            authorization.credentials,
+            expected or _DUMMY_AGENT_DIGEST,
+        )
+        if agent is None or agent.status is not AgentStatus.ACTIVE or not matches:
             raise unauthorized()
 
 
@@ -128,11 +137,31 @@ def _router(
             updated_at=now,
         )
         with UnitOfWork(factory) as uow:
-            if uow.agents.get(request.agent_id) is None:
+            agent = uow.agents.get(request.agent_id)
+            if agent is None:
                 raise HTTPException(HTTPStatus.NOT_FOUND, "agent not found")
+            if agent.status is not AgentStatus.ACTIVE:
+                raise HTTPException(HTTPStatus.CONFLICT, "agent is disabled")
             uow.tasks.add(task)
             uow.commit()
         return task
+
+    @router.post("/agents/{agent_id}/disable", response_model=RegisteredAgent)
+    def disable_agent_identity(
+        agent_id: AgentId,
+        operator: Annotated[Operator, Depends(require_operator)],
+    ) -> RegisteredAgent:
+        del operator
+        with UnitOfWork(factory) as uow:
+            agent = uow.agents.get(agent_id)
+            if agent is None:
+                raise HTTPException(HTTPStatus.NOT_FOUND, "agent not found")
+            if agent.status is AgentStatus.DISABLED:
+                return agent
+            disabled = disable_agent(agent, at=clock())
+            uow.agents.update_lifecycle(disabled)
+            uow.commit()
+            return disabled
 
     @router.get("/agents/{agent_id}/tasks/next", response_model=TaskResponse)
     def next_task(
@@ -141,13 +170,15 @@ def _router(
     ) -> TaskResponse:
         _require_agent(factory, agent_id, authorization)
         with UnitOfWork(factory) as uow:
-            task = uow.tasks.next_queued(agent_id)
+            task = uow.tasks.claim_next(
+                agent_id,
+                now=clock(),
+                lease_duration=timedelta(seconds=settings.task_lease_seconds),
+            )
             if task is None:
                 return TaskResponse(task=None)
-            claimed = transition_task(task, TaskStatus.CLAIMED, at=clock())
-            uow.tasks.update(claimed)
             uow.commit()
-        return TaskResponse(task=claimed)
+        return TaskResponse(task=task)
 
     @router.post("/agents/{agent_id}/results", response_model=ActionResult)
     def submit_result(
@@ -174,9 +205,11 @@ def _router(
                 raise HTTPException(HTTPStatus.CONFLICT, "task already has a result")
             if task.status is not TaskStatus.CLAIMED:
                 raise HTTPException(HTTPStatus.CONFLICT, "task is not awaiting a result")
+            now = clock()
+            if task.lease_expires_at is None or task.lease_expires_at <= now:
+                raise HTTPException(HTTPStatus.CONFLICT, "task lease has expired")
             if result.status == "completed" and result.output.kind != task.action.kind:
                 raise HTTPException(HTTPStatus.BAD_REQUEST, "result output does not match action")
-            now = clock()
             running = transition_task(task, TaskStatus.RUNNING, at=now)
             final_status = (
                 TaskStatus.COMPLETED if result.status == "completed" else TaskStatus.FAILED

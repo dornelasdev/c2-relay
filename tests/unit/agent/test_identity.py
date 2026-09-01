@@ -28,15 +28,21 @@ def test_identity_store_round_trip_uses_restrictive_permissions(tmp_path: Path) 
     assert store.load() == identity()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert "secret-credential" in path.read_text()
-    assert not path.with_suffix(".json.tmp").exists()
+    assert not list(path.parent.glob(".identity.json.*.tmp"))
 
 
 def test_identity_store_cleans_up_a_failed_atomic_write(tmp_path: Path) -> None:
     path = tmp_path / "identity.json"
-    temporary = path.with_suffix(".json.tmp")
-
     with patch.object(json, "dump", side_effect=OSError("write failed")), pytest.raises(OSError):
         IdentityStore(path).save(identity())
 
     assert not path.exists()
-    assert not temporary.exists()
+    assert not list(path.parent.glob(".identity.json.*.tmp"))
+
+
+def test_identity_store_rejects_non_object_state(tmp_path: Path) -> None:
+    path = tmp_path / "identity.json"
+    path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must contain a JSON object"):
+        IdentityStore(path).load()

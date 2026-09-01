@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
+from unittest.mock import MagicMock
 from uuid import UUID
 
 from alembic import command
@@ -11,6 +12,7 @@ from pydantic import SecretStr
 from c2_relay.agent.actions import ActionRegistry
 from c2_relay.agent.client import RelayClient
 from c2_relay.agent.identity import IdentityStore
+from c2_relay.agent.results import PendingResultStore
 from c2_relay.agent.runtime import AgentRuntime
 from c2_relay.api import create_app
 from c2_relay.core.config import Settings
@@ -29,7 +31,7 @@ OPERATOR_CREDENTIAL = f"c2o.{OPERATOR_UUID}.{'o' * 32}"
 def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'workflow.db'}"
     migration_config = Config("alembic.ini")
-    migration_config.set_main_option("sqlalchemy.url", database_url)
+    migration_config.attributes["database_url"] = database_url
     command.upgrade(migration_config, "head")
 
     engine = create_database_engine(database_url)
@@ -54,6 +56,7 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
         runtime = AgentRuntime(
             relay_client,
             identity_store,
+            PendingResultStore(tmp_path / "pending-result.json"),
             ActionRegistry(),
             bootstrap_token=SecretStr(BOOTSTRAP_TOKEN),
             poll_interval=1,
@@ -67,8 +70,8 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
             clock=lambda: NOW,
         )
 
-        stopped = Event()
-        stopped.set()
+        stopped = MagicMock(spec=Event)
+        stopped.is_set.side_effect = [False, True]
         runtime.run(stopped)
         identity = identity_store.load()
         assert identity is not None
@@ -91,6 +94,7 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
     assert persisted_task.status is TaskStatus.COMPLETED
     assert persisted_result is not None
     assert persisted_result.status == "completed"
+    assert not (tmp_path / "pending-result.json").exists()
     engine.dispose()
 
 

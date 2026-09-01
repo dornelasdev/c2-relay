@@ -3,6 +3,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from c2_relay.core.config import Settings
 from c2_relay.db.schema import Base
 
 config = context.config
@@ -10,6 +11,18 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+
+def database_url() -> str:
+    override = config.attributes.get("database_url")
+    if override is not None:
+        if not isinstance(override, str):
+            raise TypeError("Alembic database_url override must be a string")
+        return override
+    return Settings().database_url
+
+
+config.set_main_option("sqlalchemy.url", database_url().replace("%", "%%"))
 
 
 def run_migrations_offline() -> None:

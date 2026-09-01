@@ -47,8 +47,9 @@ Start an enrolled or bootstrap-configured agent in a separate terminal:
 uv run c2-relay-agent
 ```
 
-The agent persists its issued identity in `agent-state.json` with owner-only permissions. Its
-runtime supports only the three documented read-only host actions; it does not invoke a shell.
+The agent persists its issued identity and any result awaiting delivery in owner-only local JSON
+files. Its runtime supports only the three documented read-only host actions; it does not invoke
+a shell.
 
 ## Platform support
 
