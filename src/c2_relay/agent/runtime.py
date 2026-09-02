@@ -76,7 +76,11 @@ class AgentRuntime:
 
     def run_once(self, identity: AgentIdentity) -> None:
         self._deliver_pending(identity)
-        self._client.check_in(identity.agent_id, identity.credential)
+        self._client.check_in(
+            identity.agent_id,
+            identity.credential,
+            self._metadata_factory(),
+        )
         task = self._client.next_task(identity.agent_id, identity.credential)
         if task is None:
             return

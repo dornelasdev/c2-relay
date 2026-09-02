@@ -17,6 +17,7 @@ from c2_relay.api.schemas import EnrollmentResponse
 from c2_relay.models import (
     ActionSuccess,
     AgentId,
+    AgentMetadata,
     HostnameAction,
     HostnameOutput,
     Task,
@@ -27,6 +28,13 @@ from c2_relay.models import (
 NOW = datetime(2026, 1, 2, 12, tzinfo=UTC)
 AGENT_ID = AgentId(UUID("20000000-0000-4000-8000-000000000001"))
 IDENTITY = AgentIdentity(agent_id=AGENT_ID, credential=SecretStr("credential"))
+METADATA = AgentMetadata(
+    hostname="relay-host",
+    operating_system="Linux",
+    username="operator",
+    agent_version="0.2.0",
+    architecture="x86_64",
+)
 
 
 def claimed_task() -> Task:
@@ -66,6 +74,7 @@ def runtime(
         bootstrap_token=SecretStr("bootstrap"),
         poll_interval=1,
         max_backoff=2,
+        metadata_factory=lambda: METADATA,
         clock=lambda: NOW,
         jitter=lambda: 0,
     )
@@ -77,7 +86,7 @@ def test_run_once_checks_in_and_handles_an_empty_queue() -> None:
 
     runtime(client, MagicMock(spec=IdentityStore)).run_once(IDENTITY)
 
-    client.check_in.assert_called_once()
+    client.check_in.assert_called_once_with(AGENT_ID, IDENTITY.credential, METADATA)
     client.submit_result.assert_not_called()
 
 

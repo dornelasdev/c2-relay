@@ -3,20 +3,25 @@
 from datetime import datetime, timedelta
 
 from pydantic import TypeAdapter
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from c2_relay.core.security import CredentialDigest
-from c2_relay.db.schema import AgentRow, OperatorRow, TaskResultRow, TaskRow
+from c2_relay.core.security import CredentialDigest, IdempotencyKeyDigest
+from c2_relay.db.schema import AgentRow, AuditEventRow, OperatorRow, TaskResultRow, TaskRow
 from c2_relay.models import (
     ActionResult,
     AgentId,
     AgentMetadata,
     AgentStatus,
+    AuditEvent,
+    AuditEventId,
+    AuditEventType,
     Operator,
     OperatorId,
     OperatorStatus,
     RegisteredAgent,
+    StoredActionResult,
     Task,
     TaskId,
     TaskStatus,
@@ -60,13 +65,43 @@ class AgentRepository:
         row = self._session.get(AgentRow, agent_id)
         return None if row is None else CredentialDigest(row.credential_digest)
 
-    def touch(self, agent_id: AgentId, *, now: datetime) -> RegisteredAgent:
+    def list_page(
+        self,
+        *,
+        status: AgentStatus | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[tuple[RegisteredAgent, ...], int]:
+        filters = () if status is None else (AgentRow.status == status.value,)
+        total = self._session.scalar(select(func.count()).select_from(AgentRow).where(*filters))
+        rows = self._session.scalars(
+            select(AgentRow)
+            .where(*filters)
+            .order_by(AgentRow.created_at, AgentRow.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return tuple(self._to_domain(row) for row in rows), int(total or 0)
+
+    def refresh_metadata(
+        self,
+        agent_id: AgentId,
+        metadata: AgentMetadata,
+        *,
+        now: datetime,
+    ) -> tuple[RegisteredAgent, bool]:
         row = self._session.get(AgentRow, agent_id)
         if row is None:
             raise KeyError(agent_id)
+        metadata_changed = self._to_domain(row).metadata != metadata
+        row.hostname = metadata.hostname
+        row.operating_system = metadata.operating_system
+        row.username = metadata.username
+        row.agent_version = metadata.agent_version
+        row.architecture = metadata.architecture
         row.last_seen_at = now
         self._session.flush()
-        return self._to_domain(row)
+        return self._to_domain(row), metadata_changed
 
     def update_lifecycle(self, agent: RegisteredAgent) -> None:
         row = self._session.get(AgentRow, agent.id)
@@ -138,15 +173,83 @@ class OperatorRepository:
         )
 
 
+class AuditRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, event: AuditEvent) -> None:
+        self._session.add(
+            AuditEventRow(
+                id=event.id,
+                event_type=event.event_type.value,
+                occurred_at=event.occurred_at,
+                operator_id=event.operator_id,
+                agent_id=event.agent_id,
+                task_id=event.task_id,
+            )
+        )
+        self._session.flush()
+
+    def list_page(
+        self,
+        *,
+        event_type: AuditEventType | None,
+        operator_id: OperatorId | None,
+        agent_id: AgentId | None,
+        task_id: TaskId | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[tuple[AuditEvent, ...], int]:
+        filters = []
+        if event_type is not None:
+            filters.append(AuditEventRow.event_type == event_type.value)
+        if operator_id is not None:
+            filters.append(AuditEventRow.operator_id == operator_id)
+        if agent_id is not None:
+            filters.append(AuditEventRow.agent_id == agent_id)
+        if task_id is not None:
+            filters.append(AuditEventRow.task_id == task_id)
+        total = self._session.scalar(
+            select(func.count()).select_from(AuditEventRow).where(*filters)
+        )
+        rows = self._session.scalars(
+            select(AuditEventRow)
+            .where(*filters)
+            .order_by(AuditEventRow.occurred_at.desc(), AuditEventRow.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return tuple(self._to_domain(row) for row in rows), int(total or 0)
+
+    @staticmethod
+    def _to_domain(row: AuditEventRow) -> AuditEvent:
+        return AuditEvent(
+            id=AuditEventId(row.id),
+            event_type=AuditEventType(row.event_type),
+            occurred_at=row.occurred_at,
+            operator_id=None if row.operator_id is None else OperatorId(row.operator_id),
+            agent_id=AgentId(row.agent_id),
+            task_id=None if row.task_id is None else TaskId(row.task_id),
+        )
+
+
 class TaskRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def add(self, task: Task) -> None:
+    def add(
+        self,
+        task: Task,
+        *,
+        created_by_operator_id: OperatorId | None = None,
+        idempotency_key_digest: IdempotencyKeyDigest | None = None,
+    ) -> None:
         self._session.add(
             TaskRow(
                 id=task.id,
                 agent_id=task.agent_id,
+                created_by_operator_id=created_by_operator_id,
+                idempotency_key_digest=idempotency_key_digest,
                 action=task.action.model_dump(mode="json"),
                 status=task.status.value,
                 created_at=task.created_at,
@@ -156,10 +259,48 @@ class TaskRepository:
         )
         self._session.flush()
 
+    def get_by_idempotency_key(
+        self,
+        operator_id: OperatorId,
+        key_digest: IdempotencyKeyDigest,
+    ) -> Task | None:
+        row = self._session.scalar(
+            select(TaskRow).where(
+                TaskRow.created_by_operator_id == operator_id,
+                TaskRow.idempotency_key_digest == key_digest,
+            )
+        )
+        return None if row is None else self._to_domain(row)
+
+    def add_idempotent(
+        self,
+        task: Task,
+        *,
+        operator_id: OperatorId,
+        key_digest: IdempotencyKeyDigest,
+    ) -> tuple[Task, bool]:
+        try:
+            with self._session.begin_nested():
+                self.add(
+                    task,
+                    created_by_operator_id=operator_id,
+                    idempotency_key_digest=key_digest,
+                )
+        except IntegrityError:
+            existing = self.get_by_idempotency_key(operator_id, key_digest)
+            if existing is None:
+                raise
+            return existing, False
+        return task, True
+
     def get(self, task_id: TaskId) -> Task | None:
         row = self._session.get(TaskRow, task_id)
         if row is None:
             return None
+        return self._to_domain(row)
+
+    @staticmethod
+    def _to_domain(row: TaskRow) -> Task:
         return Task(
             id=TaskId(row.id),
             agent_id=AgentId(row.agent_id),
@@ -170,6 +311,29 @@ class TaskRepository:
             lease_expires_at=row.lease_expires_at,
         )
 
+    def list_page(
+        self,
+        *,
+        agent_id: AgentId | None,
+        status: TaskStatus | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[tuple[Task, ...], int]:
+        filters = []
+        if agent_id is not None:
+            filters.append(TaskRow.agent_id == agent_id)
+        if status is not None:
+            filters.append(TaskRow.status == status.value)
+        total = self._session.scalar(select(func.count()).select_from(TaskRow).where(*filters))
+        rows = self._session.scalars(
+            select(TaskRow)
+            .where(*filters)
+            .order_by(TaskRow.created_at, TaskRow.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return tuple(self._to_domain(row) for row in rows), int(total or 0)
+
     def update(self, task: Task) -> None:
         row = self._session.get(TaskRow, task.id)
         if row is None:
@@ -178,6 +342,49 @@ class TaskRepository:
         row.updated_at = task.updated_at
         row.lease_expires_at = task.lease_expires_at
         self._session.flush()
+
+    def cancel_if_active(self, task_id: TaskId, *, now: datetime) -> tuple[Task | None, bool]:
+        cancelled_id = self._session.scalar(
+            update(TaskRow)
+            .where(
+                TaskRow.id == task_id,
+                TaskRow.status.in_(
+                    (
+                        TaskStatus.QUEUED.value,
+                        TaskStatus.CLAIMED.value,
+                        TaskStatus.RUNNING.value,
+                    )
+                ),
+            )
+            .values(
+                status=TaskStatus.CANCELLED.value,
+                updated_at=now,
+                lease_expires_at=None,
+            )
+            .returning(TaskRow.id)
+        )
+        self._session.flush()
+        return self.get(task_id), cancelled_id is not None
+
+    def finish_claimed(self, task: Task, *, lease_valid_at: datetime) -> bool:
+        if task.status not in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
+            raise ValueError("finished task must be completed or failed")
+        updated_id = self._session.scalar(
+            update(TaskRow)
+            .where(
+                TaskRow.id == task.id,
+                TaskRow.status == TaskStatus.CLAIMED.value,
+                TaskRow.lease_expires_at > lease_valid_at,
+            )
+            .values(
+                status=task.status.value,
+                updated_at=task.updated_at,
+                lease_expires_at=None,
+            )
+            .returning(TaskRow.id)
+        )
+        self._session.flush()
+        return updated_id is not None
 
     def claim_next(
         self,
@@ -230,24 +437,40 @@ class ResultRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def add(self, result: ActionResult) -> None:
+    def add(self, result: ActionResult, *, received_at: datetime) -> bool:
         serialized = result.model_dump(mode="json")
         payload_key = "output" if result.status == "completed" else "error"
-        self._session.add(
-            TaskResultRow(
-                task_id=result.task_id,
-                agent_id=result.agent_id,
-                status=result.status,
-                completed_at=result.completed_at,
-                payload=serialized[payload_key],
-            )
-        )
-        self._session.flush()
+        try:
+            with self._session.begin_nested():
+                self._session.add(
+                    TaskResultRow(
+                        task_id=result.task_id,
+                        agent_id=result.agent_id,
+                        status=result.status,
+                        completed_at=result.completed_at,
+                        received_at=received_at,
+                        payload=serialized[payload_key],
+                    )
+                )
+                self._session.flush()
+        except IntegrityError:
+            return False
+        return True
 
     def get(self, task_id: TaskId) -> ActionResult | None:
         row = self._session.get(TaskResultRow, task_id)
         if row is None:
             return None
+        return self._to_domain(row)
+
+    def get_stored(self, task_id: TaskId) -> StoredActionResult | None:
+        row = self._session.get(TaskResultRow, task_id)
+        if row is None:
+            return None
+        return StoredActionResult(result=self._to_domain(row), received_at=row.received_at)
+
+    @staticmethod
+    def _to_domain(row: TaskResultRow) -> ActionResult:
         payload_key = "output" if row.status == "completed" else "error"
         return _RESULT_ADAPTER.validate_python(
             {

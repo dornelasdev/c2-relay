@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=8000, ge=1, le=65535)
     task_lease_seconds: float = Field(default=30.0, gt=0, le=3600)
+    result_clock_skew_seconds: float = Field(default=300.0, ge=0, le=3600)
+    auth_failure_limit: int = Field(default=10, ge=1, le=1000)
+    auth_failure_window_seconds: float = Field(default=60.0, gt=0, le=3600)
     agent_server_url: str = Field(default="http://127.0.0.1:8000", min_length=1)
     agent_state_path: Path = Path("agent-state.json")
     agent_result_path: Path = Path("pending-result.json")

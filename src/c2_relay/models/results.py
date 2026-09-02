@@ -34,3 +34,8 @@ class ActionFailure(DomainModel):
 
 
 ActionResult = Annotated[ActionSuccess | ActionFailure, Field(discriminator="status")]
+
+
+class StoredActionResult(DomainModel):
+    result: ActionResult
+    received_at: UtcDateTime

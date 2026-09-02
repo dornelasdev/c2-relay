@@ -7,27 +7,35 @@ from http import HTTPStatus
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials
-from starlette.middleware.base import RequestResponseEndpoint
 
 from c2_relay import __version__
 from c2_relay.api.authentication import RequireOperator, bearer, unauthorized
+from c2_relay.api.middleware import (
+    AuthenticationFailureLimitMiddleware,
+    RequestSizeLimitMiddleware,
+)
 from c2_relay.api.schemas import (
     ActionResultSubmission,
     ActionSuccessSubmission,
+    AgentListResponse,
+    AuditEventListResponse,
+    CheckInRequest,
     CheckInResponse,
     EnrollmentRequest,
     EnrollmentResponse,
     HealthResponse,
+    StoredResultResponse,
     TaskCreateRequest,
+    TaskListResponse,
     TaskResponse,
 )
 from c2_relay.core.config import Settings, get_settings
 from c2_relay.core.security import (
     credential_matches,
     digest_credential,
+    digest_idempotency_key,
     generate_credential,
     secret_matches,
 )
@@ -38,8 +46,13 @@ from c2_relay.models import (
     ActionResult,
     ActionSuccess,
     AgentId,
+    AgentMetadata,
     AgentStatus,
+    AuditEvent,
+    AuditEventId,
+    AuditEventType,
     Operator,
+    OperatorId,
     RegisteredAgent,
     Task,
     TaskId,
@@ -51,6 +64,24 @@ from c2_relay.services.operators import OperatorService
 
 MAX_REQUEST_BYTES = 64 * 1024
 _DUMMY_AGENT_DIGEST = digest_credential("x" * 32)
+
+
+def _audit_event(
+    event_type: AuditEventType,
+    *,
+    occurred_at: datetime,
+    agent_id: AgentId,
+    operator_id: OperatorId | None = None,
+    task_id: TaskId | None = None,
+) -> AuditEvent:
+    return AuditEvent(
+        id=AuditEventId(uuid4()),
+        event_type=event_type,
+        occurred_at=occurred_at,
+        operator_id=operator_id,
+        agent_id=agent_id,
+        task_id=task_id,
+    )
 
 
 def _require_bootstrap(settings: Settings, provided: str | None) -> None:
@@ -93,6 +124,114 @@ def _router(
     def health() -> HealthResponse:
         return HealthResponse()
 
+    @router.get("/agents", response_model=AgentListResponse)
+    def list_agents(
+        operator: Annotated[Operator, Depends(require_operator)],
+        status: AgentStatus | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
+    ) -> AgentListResponse:
+        del operator
+        with UnitOfWork(factory) as uow:
+            agents, total = uow.agents.list_page(
+                status=status,
+                limit=limit,
+                offset=offset,
+            )
+        return AgentListResponse(items=agents, total=total, limit=limit, offset=offset)
+
+    @router.get("/audit-events", response_model=AuditEventListResponse)
+    def list_audit_events(
+        operator: Annotated[Operator, Depends(require_operator)],
+        event_type: AuditEventType | None = None,
+        operator_id: OperatorId | None = None,
+        agent_id: AgentId | None = None,
+        task_id: TaskId | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
+    ) -> AuditEventListResponse:
+        del operator
+        with UnitOfWork(factory) as uow:
+            events, total = uow.audit_events.list_page(
+                event_type=event_type,
+                operator_id=operator_id,
+                agent_id=agent_id,
+                task_id=task_id,
+                limit=limit,
+                offset=offset,
+            )
+        return AuditEventListResponse(items=events, total=total, limit=limit, offset=offset)
+
+    @router.get("/tasks", response_model=TaskListResponse)
+    def list_tasks(
+        operator: Annotated[Operator, Depends(require_operator)],
+        agent_id: AgentId | None = None,
+        status: TaskStatus | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
+    ) -> TaskListResponse:
+        del operator
+        with UnitOfWork(factory) as uow:
+            tasks, total = uow.tasks.list_page(
+                agent_id=agent_id,
+                status=status,
+                limit=limit,
+                offset=offset,
+            )
+        return TaskListResponse(items=tasks, total=total, limit=limit, offset=offset)
+
+    @router.get("/tasks/{task_id}", response_model=Task)
+    def get_task(
+        task_id: TaskId,
+        operator: Annotated[Operator, Depends(require_operator)],
+    ) -> Task:
+        del operator
+        with UnitOfWork(factory) as uow:
+            task = uow.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(HTTPStatus.NOT_FOUND, "task not found")
+        return task
+
+    @router.get("/tasks/{task_id}/result", response_model=StoredResultResponse)
+    def get_task_result(
+        task_id: TaskId,
+        operator: Annotated[Operator, Depends(require_operator)],
+    ) -> StoredResultResponse:
+        del operator
+        with UnitOfWork(factory) as uow:
+            result = uow.results.get_stored(task_id)
+        if result is None:
+            raise HTTPException(HTTPStatus.NOT_FOUND, "result not found")
+        return StoredResultResponse(item=result)
+
+    @router.post("/tasks/{task_id}/cancel", response_model=Task)
+    def cancel_task(
+        task_id: TaskId,
+        operator: Annotated[Operator, Depends(require_operator)],
+    ) -> Task:
+        now = clock()
+        with UnitOfWork(factory) as uow:
+            task, transitioned = uow.tasks.cancel_if_active(task_id, now=now)
+            if task is None:
+                raise HTTPException(HTTPStatus.NOT_FOUND, "task not found")
+            if task.status is not TaskStatus.CANCELLED:
+                raise HTTPException(
+                    HTTPStatus.CONFLICT,
+                    f"task cannot be cancelled from {task.status.value}",
+                )
+            if transitioned:
+                uow.audit_events.add(
+                    _audit_event(
+                        AuditEventType.TASK_CANCELLED,
+                        occurred_at=now,
+                        operator_id=operator.id,
+                        agent_id=task.agent_id,
+                        task_id=task.id,
+                    )
+                )
+            uow.commit()
+        return task
+
     @router.post("/agents/enroll", response_model=EnrollmentResponse, status_code=201)
     def enroll(
         request: EnrollmentRequest,
@@ -101,12 +240,20 @@ def _router(
         _require_bootstrap(settings, bootstrap_token)
         agent_id = AgentId(uuid4())
         credential = credential_factory()
+        now = clock()
         with UnitOfWork(factory) as uow:
             uow.agents.add(
                 agent_id,
                 request,
                 digest_credential(credential),
-                now=clock(),
+                now=now,
+            )
+            uow.audit_events.add(
+                _audit_event(
+                    AuditEventType.AGENT_ENROLLED,
+                    occurred_at=now,
+                    agent_id=agent_id,
+                )
             )
             uow.commit()
         return EnrollmentResponse(agent_id=agent_id, credential=credential)
@@ -114,11 +261,25 @@ def _router(
     @router.post("/agents/{agent_id}/check-ins", response_model=CheckInResponse)
     def check_in(
         agent_id: AgentId,
+        request: CheckInRequest,
         authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
     ) -> CheckInResponse:
         _require_agent(factory, agent_id, authorization)
+        now = clock()
         with UnitOfWork(factory) as uow:
-            uow.agents.touch(agent_id, now=clock())
+            _, metadata_changed = uow.agents.refresh_metadata(
+                agent_id,
+                AgentMetadata.model_validate(request.model_dump()),
+                now=now,
+            )
+            if metadata_changed:
+                uow.audit_events.add(
+                    _audit_event(
+                        AuditEventType.AGENT_METADATA_UPDATED,
+                        occurred_at=now,
+                        agent_id=agent_id,
+                    )
+                )
             uow.commit()
         return CheckInResponse(agent_id=agent_id)
 
@@ -126,8 +287,16 @@ def _router(
     def create_task(
         request: TaskCreateRequest,
         operator: Annotated[Operator, Depends(require_operator)],
+        idempotency_key: Annotated[
+            str | None,
+            Header(
+                alias="Idempotency-Key",
+                min_length=16,
+                max_length=128,
+                pattern=r"^[A-Za-z0-9._:-]+$",
+            ),
+        ] = None,
     ) -> Task:
-        del operator
         now = clock()
         task = Task(
             id=TaskId(uuid4()),
@@ -137,12 +306,50 @@ def _router(
             updated_at=now,
         )
         with UnitOfWork(factory) as uow:
+            key_digest = (
+                None if idempotency_key is None else digest_idempotency_key(idempotency_key)
+            )
+            if key_digest is not None:
+                existing = uow.tasks.get_by_idempotency_key(operator.id, key_digest)
+                if existing is not None:
+                    if existing.agent_id != task.agent_id or existing.action != task.action:
+                        raise HTTPException(
+                            HTTPStatus.CONFLICT,
+                            "idempotency key was already used for a different task",
+                        )
+                    return existing
             agent = uow.agents.get(request.agent_id)
             if agent is None:
                 raise HTTPException(HTTPStatus.NOT_FOUND, "agent not found")
             if agent.status is not AgentStatus.ACTIVE:
                 raise HTTPException(HTTPStatus.CONFLICT, "agent is disabled")
-            uow.tasks.add(task)
+            created = True
+            if key_digest is None:
+                uow.tasks.add(task, created_by_operator_id=operator.id)
+            else:
+                task, created = uow.tasks.add_idempotent(
+                    task,
+                    operator_id=operator.id,
+                    key_digest=key_digest,
+                )
+                if not created and (
+                    task.agent_id != request.agent_id or task.action != request.action
+                ):
+                    raise HTTPException(
+                        HTTPStatus.CONFLICT,
+                        "idempotency key was already used for a different task",
+                    )
+            if not created:
+                return task
+            uow.audit_events.add(
+                _audit_event(
+                    AuditEventType.TASK_CREATED,
+                    occurred_at=now,
+                    operator_id=operator.id,
+                    agent_id=task.agent_id,
+                    task_id=task.id,
+                )
+            )
             uow.commit()
         return task
 
@@ -151,15 +358,23 @@ def _router(
         agent_id: AgentId,
         operator: Annotated[Operator, Depends(require_operator)],
     ) -> RegisteredAgent:
-        del operator
         with UnitOfWork(factory) as uow:
             agent = uow.agents.get(agent_id)
             if agent is None:
                 raise HTTPException(HTTPStatus.NOT_FOUND, "agent not found")
             if agent.status is AgentStatus.DISABLED:
                 return agent
-            disabled = disable_agent(agent, at=clock())
+            now = clock()
+            disabled = disable_agent(agent, at=now)
             uow.agents.update_lifecycle(disabled)
+            uow.audit_events.add(
+                _audit_event(
+                    AuditEventType.AGENT_DISABLED,
+                    occurred_at=now,
+                    operator_id=operator.id,
+                    agent_id=agent.id,
+                )
+            )
             uow.commit()
             return disabled
 
@@ -169,14 +384,23 @@ def _router(
         authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
     ) -> TaskResponse:
         _require_agent(factory, agent_id, authorization)
+        now = clock()
         with UnitOfWork(factory) as uow:
             task = uow.tasks.claim_next(
                 agent_id,
-                now=clock(),
+                now=now,
                 lease_duration=timedelta(seconds=settings.task_lease_seconds),
             )
             if task is None:
                 return TaskResponse(task=None)
+            uow.audit_events.add(
+                _audit_event(
+                    AuditEventType.TASK_CLAIMED,
+                    occurred_at=now,
+                    agent_id=agent_id,
+                    task_id=task.id,
+                )
+            )
             uow.commit()
         return TaskResponse(task=task)
 
@@ -208,6 +432,15 @@ def _router(
             now = clock()
             if task.lease_expires_at is None or task.lease_expires_at <= now:
                 raise HTTPException(HTTPStatus.CONFLICT, "task lease has expired")
+            allowed_skew = timedelta(seconds=settings.result_clock_skew_seconds)
+            if (
+                result.completed_at < task.updated_at - allowed_skew
+                or result.completed_at > now + allowed_skew
+            ):
+                raise HTTPException(
+                    HTTPStatus.BAD_REQUEST,
+                    "result completion time is implausible",
+                )
             if result.status == "completed" and result.output.kind != task.action.kind:
                 raise HTTPException(HTTPStatus.BAD_REQUEST, "result output does not match action")
             running = transition_task(task, TaskStatus.RUNNING, at=now)
@@ -215,8 +448,35 @@ def _router(
                 TaskStatus.COMPLETED if result.status == "completed" else TaskStatus.FAILED
             )
             finished = transition_task(running, final_status, at=now)
-            uow.tasks.update(finished)
-            uow.results.add(result)
+            if not uow.tasks.finish_claimed(finished, lease_valid_at=now):
+                existing = uow.results.get(result.task_id)
+                if existing == result:
+                    return existing
+                raise HTTPException(
+                    HTTPStatus.CONFLICT,
+                    "task is no longer awaiting a result",
+                )
+            if not uow.results.add(result, received_at=now):
+                existing = uow.results.get(result.task_id)
+                if existing == result:
+                    return existing
+                raise HTTPException(
+                    HTTPStatus.CONFLICT,
+                    "task already has a result",
+                )
+            event_type = (
+                AuditEventType.TASK_COMPLETED
+                if result.status == "completed"
+                else AuditEventType.TASK_FAILED
+            )
+            uow.audit_events.add(
+                _audit_event(
+                    event_type,
+                    occurred_at=now,
+                    agent_id=agent_id,
+                    task_id=task.id,
+                )
+            )
             uow.commit()
         return result
 
@@ -245,6 +505,12 @@ def create_app(
             owned_engine.dispose()
 
     app = FastAPI(title="c2-relay", version=__version__, lifespan=lifespan)
+    app.add_middleware(RequestSizeLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+    app.add_middleware(
+        AuthenticationFailureLimitMiddleware,
+        max_failures=resolved_settings.auth_failure_limit,
+        window_seconds=resolved_settings.auth_failure_window_seconds,
+    )
     app.include_router(
         _router(
             resolved_settings,
@@ -254,19 +520,5 @@ def create_app(
             OperatorService(session_factory, clock=resolved_clock),
         )
     )
-
-    @app.middleware("http")
-    async def limit_request_size(request: Request, call_next: RequestResponseEndpoint) -> Response:
-        content_length = request.headers.get("content-length")
-        if (
-            content_length is not None
-            and content_length.isdecimal()
-            and int(content_length) > MAX_REQUEST_BYTES
-        ):
-            return JSONResponse(
-                status_code=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                content={"detail": "request body too large"},
-            )
-        return await call_next(request)
 
     return app

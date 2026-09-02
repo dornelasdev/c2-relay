@@ -2,16 +2,16 @@
 
 ## Status
 
-This document records the implemented architecture of c2-relay. It will grow alongside the
-reviewed `0.1.0` sections; planned behavior is not presented as completed behavior.
+This document records the implemented architecture of c2-relay. It grows alongside reviewed
+implementation slices; planned behavior is not presented as completed behavior.
 
 ## Package layout
 
 c2-relay uses a `src` layout so tests and development commands import the installed package,
 not an accidental package path from the repository root.
 
-The package currently exposes a domain contract layer under `c2_relay.models`. Persistence,
-API, and agent-runtime boundaries will be added only when their contracts are implemented.
+The package separates domain contracts, persistence, HTTP API, services, and the agent runtime
+under `c2_relay`. Each boundary depends on domain contracts rather than transport-specific data.
 
 ## Domain contracts
 
@@ -54,9 +54,18 @@ application owns transactions through an explicit unit of work; repositories nev
 implicitly. Alembic migrations are the only supported mechanism for creating or evolving an
 operational database.
 
+Append-only audit rows record successful operational state changes in the same transaction as
+the change they describe. Historical identifiers are stored without cascading foreign keys so a
+future entity deletion cannot erase the corresponding audit trail. The application exposes no
+audit update or delete operation.
+
 Task polling uses a conditional `UPDATE ... RETURNING` claim rather than row-lock syntax that
 SQLite ignores. Concurrent pollers therefore claim different queued tasks. Expired claims are
 requeued in the same transaction before the next task is selected.
+
+Optional task-creation idempotency keys are scoped to the authenticated operator. Only each key's
+SHA-256 digest is persisted, and a database unique constraint makes concurrent identical requests
+resolve to one task. Reusing a key for different agent or action data returns a conflict.
 
 SQLite stores timestamps without timezone information, so a custom column type converts aware
 timestamps to naive UTC at the storage boundary and restores aware UTC values on reads. Foreign
@@ -76,14 +85,34 @@ delegates persistence to a unit of work; it does not redefine domain lifecycle r
   configured. Task creation requires an active operator's bearer credential.
 - Enrollment issues a high-entropy agent credential once and persists only its SHA-256 digest.
 - Operator provisioning also displays its credential once and persists only the secret digest.
+- Task creation accepts an optional 16-to-128-character `Idempotency-Key`. Repeating the same
+  operator, key, agent, and action returns the original task; conflicting reuse returns `409`.
+- Authenticated operators can list and filter agents and tasks, inspect individual tasks, and
+  retrieve stored results through bounded read endpoints. Responses never expose credential
+  material or its digest.
+- Operators can inspect bounded audit history filtered by event type or related operator, agent,
+  and task identifiers. Events contain no credentials, digests, host metadata, result payloads,
+  or other free-form content.
+- Operators can atomically cancel queued or claimed tasks. Cancellation is idempotent, cannot
+  overwrite a terminal result, and prevents a concurrent result from overwriting cancellation.
 - Check-in, task polling, and result submission require the enrolled agent's bearer credential.
+- Each authenticated check-in refreshes the agent's bounded self-reported metadata and a
+  server-generated `last_seen_at`. Authentication identifies the credential holder but does not
+  attest that reported host facts are truthful.
 - An authenticated operator can disable an agent. Disabled agents cannot authenticate or receive
   newly queued tasks, and repeating the disable operation is safe.
 - Polling atomically claims queued work with a configurable lease. Late results are rejected and
   expired claims are recovered on the next poll. Results must match the authenticated agent,
   claimed task, and requested action. Repeating an identical result is idempotent; conflicting
   results fail.
-- Request bodies advertised above 64 KiB are rejected before parsing.
+- Agent-reported completion times must fall within configurable clock skew around the claim and
+  server receipt times. The server stores its own `received_at` timestamp separately.
+- Request bodies above 64 KiB are rejected while their ASGI byte stream is consumed, even if
+  `Content-Length` is absent, malformed, or dishonest.
+- Repeated `401` responses from one direct peer are tracked in a bounded, process-local sliding
+  window. Once the configured threshold is reached, later protected API requests receive `429`
+  with `Retry-After`; health remains available. Failures and the first throttle event are logged
+  with method, path, and direct peer, but never credentials, bodies, or credential digests.
 
 The development server binds to localhost by default. TLS is an external deployment requirement;
 c2-relay does not claim secure network transport when served directly over plain HTTP.
@@ -105,7 +134,10 @@ a revoked credential. Signal-driven shutdown uses an interruptible event wait ra
 uninterruptible sleep.
 
 Lease recovery provides at-least-once execution. This is acceptable for the current read-only
-actions; mutating actions would additionally require a unique claim token and idempotency key.
+actions; mutating actions would additionally require execution-level replay protection because
+task-creation idempotency does not prevent an agent from rerunning a recovered claim.
+Cancelling a claimed task withdraws it at the server boundary but cannot interrupt an action that
+has already started on the agent host.
 
 Identity and outbox files share an atomic JSON writer that uses uniquely created temporary files,
 atomic replacement, and `0600` permissions. This avoids predictable temporary-file names and
@@ -121,3 +153,13 @@ and resolved reproducibly in `uv.lock`.
 c2-relay is intended for authorized environments. Secure defaults, bounded behavior, explicit
 authentication, strict input validation, and auditable state transitions are architectural
 requirements rather than optional extensions.
+
+Audit history is operational accountability, not cryptographic tamper evidence. A database
+administrator can modify SQLite directly. Failed authentication is security-log telemetry rather
+than an audit row because an unauthenticated caller cannot supply a trusted operator or agent
+identity.
+
+Authentication throttling deliberately ignores `X-Forwarded-For`; trusting that header without a
+configured proxy would make the limiter spoofable. Its peer state resets when the process restarts
+and is not shared by multiple workers. A production deployment therefore still needs a trusted
+edge or shared-store limiter, with an explicit forwarded-client policy.

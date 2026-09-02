@@ -33,10 +33,16 @@ class RelayClient:
         response.raise_for_status()
         return EnrollmentResponse.model_validate_json(response.content)
 
-    def check_in(self, agent_id: AgentId, credential: SecretStr) -> CheckInResponse:
+    def check_in(
+        self,
+        agent_id: AgentId,
+        credential: SecretStr,
+        metadata: AgentMetadata,
+    ) -> CheckInResponse:
         response = self._client.post(
             f"/api/v1/agents/{agent_id}/check-ins",
             headers=self._authorization(credential),
+            json=metadata.model_dump(mode="json"),
         )
         response.raise_for_status()
         return CheckInResponse.model_validate_json(response.content)

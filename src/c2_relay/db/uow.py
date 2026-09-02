@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from c2_relay.db.repositories import (
     AgentRepository,
+    AuditRepository,
     OperatorRepository,
     ResultRepository,
     TaskRepository,
@@ -18,6 +19,7 @@ class UnitOfWork:
         self._session_factory = session_factory
         self.session: Session | None = None
         self.agents: AgentRepository
+        self.audit_events: AuditRepository
         self.operators: OperatorRepository
         self.tasks: TaskRepository
         self.results: ResultRepository
@@ -25,6 +27,7 @@ class UnitOfWork:
     def __enter__(self) -> "UnitOfWork":
         self.session = self._session_factory()
         self.agents = AgentRepository(self.session)
+        self.audit_events = AuditRepository(self.session)
         self.operators = OperatorRepository(self.session)
         self.tasks = TaskRepository(self.session)
         self.results = ResultRepository(self.session)

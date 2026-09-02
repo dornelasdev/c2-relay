@@ -18,9 +18,16 @@ from c2_relay.models.agents import (
     RegisteredAgent,
     disable_agent,
 )
+from c2_relay.models.audit import AuditEvent, AuditEventId, AuditEventType
 from c2_relay.models.common import AgentId, DomainModel, TaskId, UtcDateTime
 from c2_relay.models.operators import Operator, OperatorId, OperatorStatus
-from c2_relay.models.results import ActionFailure, ActionResult, ActionSuccess, ErrorDetail
+from c2_relay.models.results import (
+    ActionFailure,
+    ActionResult,
+    ActionSuccess,
+    ErrorDetail,
+    StoredActionResult,
+)
 from c2_relay.models.tasks import InvalidTaskTransitionError, Task, TaskStatus, transition_task
 
 __all__ = [
@@ -33,6 +40,9 @@ __all__ = [
     "AgentId",
     "AgentMetadata",
     "AgentStatus",
+    "AuditEvent",
+    "AuditEventId",
+    "AuditEventType",
     "CurrentUserAction",
     "CurrentUserOutput",
     "DomainModel",
@@ -47,6 +57,7 @@ __all__ = [
     "OperatorId",
     "OperatorStatus",
     "RegisteredAgent",
+    "StoredActionResult",
     "Task",
     "TaskId",
     "TaskStatus",

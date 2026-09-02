@@ -112,4 +112,11 @@ def test_openapi_describes_versioned_routes_and_bearer_authentication(tmp_path: 
     }
     task_operation = schema["paths"]["/api/v1/tasks"]["post"]
     assert task_operation["security"] == [{"HTTPBearer": []}]
-    assert "parameters" not in task_operation
+    [idempotency_parameter] = task_operation["parameters"]
+    assert idempotency_parameter["name"] == "Idempotency-Key"
+    assert idempotency_parameter["in"] == "header"
+    assert idempotency_parameter["required"] is False
+    key_schema = idempotency_parameter["schema"]["anyOf"][0]
+    assert key_schema["minLength"] == 16
+    assert key_schema["maxLength"] == 128
+    assert key_schema["pattern"] == r"^[A-Za-z0-9._:-]+$"

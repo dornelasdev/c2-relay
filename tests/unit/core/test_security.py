@@ -6,6 +6,7 @@ from pydantic import SecretStr
 from c2_relay.core.security import (
     credential_matches,
     digest_credential,
+    digest_idempotency_key,
     generate_credential,
     generate_operator_credential,
     parse_operator_credential,
@@ -28,6 +29,18 @@ def test_credential_digest_is_deterministic_and_storage_safe() -> None:
 def test_empty_credentials_are_rejected() -> None:
     with pytest.raises(ValueError, match="credential cannot be empty"):
         digest_credential("")
+
+
+def test_idempotency_key_digest_is_deterministic_and_storage_safe() -> None:
+    digest = digest_idempotency_key("task-request-0001")
+
+    assert len(digest) == 64
+    assert "task-request-0001" not in digest
+    assert digest == digest_idempotency_key("task-request-0001")
+    assert digest != digest_idempotency_key("task-request-0002")
+
+    with pytest.raises(ValueError, match="idempotency key cannot be empty"):
+        digest_idempotency_key("")
 
 
 def test_generated_credentials_have_high_entropy() -> None:

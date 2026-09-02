@@ -38,8 +38,14 @@ uv run c2-relay-server
 
 The server binds to `127.0.0.1:8000` by default. Copy `.env.example` to `.env` and configure a
 high-entropy `C2_RELAY_BOOTSTRAP_TOKEN` to enable agent enrollment. Provision an operator with
-`uv run c2-relay-operator create --name "Local Operator"`; its one-time credential authorizes task
-creation. The API must be placed behind TLS before use across a network.
+`uv run c2-relay-operator create --name "Local Operator"`; its one-time credential authorizes
+agent and task management plus bounded audit-history inspection. The API must be placed behind
+TLS before use across a network.
+
+Task creation accepts an optional `Idempotency-Key` header so an operator can safely retry the
+same request without queuing duplicate work. See the local runbook for the expected workflow.
+Repeated authentication failures from one direct peer are temporarily rate limited and recorded
+without credential material in the server's security log.
 
 Start an enrolled or bootstrap-configured agent in a separate terminal:
 

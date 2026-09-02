@@ -51,7 +51,7 @@ def test_relay_client_workflow_and_headers() -> None:
     )
     enrollment = client.enroll(metadata, SecretStr("bootstrap"))
     credential = SecretStr(enrollment.credential)
-    client.check_in(AGENT_ID, credential)
+    client.check_in(AGENT_ID, credential, metadata)
     assert client.next_task(AGENT_ID, credential) is None
     client.submit_result(
         AGENT_ID,
@@ -67,6 +67,7 @@ def test_relay_client_workflow_and_headers() -> None:
 
     assert requests[0].headers["x-bootstrap-token"] == "bootstrap"
     assert all(request.headers["authorization"].startswith("Bearer ") for request in requests[1:])
+    assert requests[1].read() == requests[0].read()
 
 
 def test_relay_client_closes_an_owned_http_client() -> None:

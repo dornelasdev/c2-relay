@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from c2_relay.models.operators import OperatorId
 
 CredentialDigest = NewType("CredentialDigest", str)
+IdempotencyKeyDigest = NewType("IdempotencyKeyDigest", str)
 _OPERATOR_CREDENTIAL_PREFIX = "c2o"
 _OPERATOR_SECRET_PATTERN = r"[A-Za-z0-9_-]{32,128}"
 
@@ -30,6 +31,15 @@ def digest_credential(credential: str) -> CredentialDigest:
         msg = "credential cannot be empty"
         raise ValueError(msg)
     return CredentialDigest(sha256(credential.encode("utf-8")).hexdigest())
+
+
+def digest_idempotency_key(key: str) -> IdempotencyKeyDigest:
+    """Create a fixed-length storage value for an idempotency key."""
+
+    if not key:
+        msg = "idempotency key cannot be empty"
+        raise ValueError(msg)
+    return IdempotencyKeyDigest(sha256(key.encode("utf-8")).hexdigest())
 
 
 def credential_matches(credential: str, expected: CredentialDigest) -> bool:

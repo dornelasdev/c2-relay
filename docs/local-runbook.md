@@ -20,6 +20,13 @@ create tasks.
 
 The default task claim lease is 30 seconds. It can be changed with
 `C2_RELAY_TASK_LEASE_SECONDS`; keep it longer than the expected action and result-submission time.
+Agent completion times allow five minutes of clock skew by default, configurable through
+`C2_RELAY_RESULT_CLOCK_SKEW_SECONDS`.
+
+Authentication throttling permits 10 failed attempts per direct peer in a rolling 60-second
+window by default. Configure it with `C2_RELAY_AUTH_FAILURE_LIMIT` and
+`C2_RELAY_AUTH_FAILURE_WINDOW_SECONDS`. A blocked request receives `429 Too Many Requests` and a
+`Retry-After` header; restarting this single-process server clears the in-memory history.
 
 ## Start the server
 
@@ -52,6 +59,10 @@ owner-only:
 stat -f '%Sp' agent-state.json 2>/dev/null || stat -c '%A' agent-state.json
 ```
 
+Each authenticated check-in refreshes the hostname, operating system, username, agent version,
+and architecture shown to operators. `last_seen_at` always comes from the server clock. These host
+facts are self-reported inventory, not independently verified evidence.
+
 If result submission is interrupted, the agent temporarily stores `pending-result.json` with the
 same owner-only permissions. The file is removed after successful delivery or a permanent stale
 result response.
@@ -65,8 +76,23 @@ host.current_user
 host.operating_system
 ```
 
-The running agent should claim and complete each task. Inspect persisted state without printing
-the credential digest:
+For `POST /api/v1/tasks`, set the optional `Idempotency-Key` header to a fresh UUID or another
+unique 16-to-128-character value. Retrying the same agent and action with the same key returns the
+original task. Reusing that key with a different agent or action returns `409 Conflict`. The
+server stores a SHA-256 digest of the key, not its plaintext value.
+
+The running agent should claim and complete each task. Use the operator-authenticated agent and
+task read endpoints in Swagger UI to inspect status and stored results. The list endpoints support
+bounded `limit` and `offset` pagination plus status filters; tasks can also be filtered by agent.
+Use `POST /api/v1/tasks/{task_id}/cancel` to withdraw a queued or claimed task. Repeating the
+request is safe; completed, failed, or expired tasks return a conflict instead of being rewritten.
+
+Use the operator-authenticated `GET /api/v1/audit-events` endpoint to inspect successful state
+changes. It supports bounded pagination and filters for event type, operator, agent, and task IDs.
+Routine check-ins with unchanged metadata do not add rows. Audit responses deliberately omit
+credentials, host metadata, action output, and error details.
+
+For a local persistence cross-check without printing credential digests:
 
 ```bash
 sqlite3 c2-relay.db \

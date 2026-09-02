@@ -10,7 +10,10 @@ from c2_relay.models import (
     ActionSuccess,
     AgentId,
     AgentMetadata,
+    AuditEvent,
     DomainModel,
+    RegisteredAgent,
+    StoredActionResult,
     Task,
 )
 
@@ -30,6 +33,10 @@ class EnrollmentResponse(DomainModel):
     credential: Annotated[str, Field(min_length=32, max_length=128)]
 
 
+class CheckInRequest(AgentMetadata):
+    model_config = TransportModel.model_config
+
+
 class CheckInResponse(DomainModel):
     agent_id: AgentId
     accepted: bool = True
@@ -42,6 +49,31 @@ class TaskCreateRequest(TransportModel):
 
 class TaskResponse(DomainModel):
     task: Task | None
+
+
+class AgentListResponse(DomainModel):
+    items: tuple[RegisteredAgent, ...]
+    total: int
+    limit: int
+    offset: int
+
+
+class AuditEventListResponse(DomainModel):
+    items: tuple[AuditEvent, ...]
+    total: int
+    limit: int
+    offset: int
+
+
+class TaskListResponse(DomainModel):
+    items: tuple[Task, ...]
+    total: int
+    limit: int
+    offset: int
+
+
+class StoredResultResponse(DomainModel):
+    item: StoredActionResult
 
 
 class HealthResponse(DomainModel):
