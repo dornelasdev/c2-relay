@@ -1001,3 +1001,18 @@ def test_request_size_is_bounded(client: TestClient) -> None:
 
     assert response.status_code == 413
     assert response.json() == {"detail": "request body too large"}
+
+
+def test_chunked_request_size_is_measured_before_body_parsing(client: TestClient) -> None:
+    def oversized_chunks() -> Iterator[bytes]:
+        yield b"x" * (32 * 1024)
+        yield b"x" * (32 * 1024 + 1)
+
+    response = client.post(
+        "/api/v1/agents/enroll",
+        headers={"Content-Type": "application/json", "Transfer-Encoding": "chunked"},
+        content=oversized_chunks(),
+    )
+
+    assert response.status_code == 413
+    assert response.json() == {"detail": "request body too large"}

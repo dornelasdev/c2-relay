@@ -247,3 +247,36 @@ def test_request_limit_forwards_non_body_asgi_messages() -> None:
     asyncio.run(middleware(scope, receive, send))
 
     assert sent[0]["status"] == 204
+
+
+def test_request_limit_replays_a_bounded_chunked_body() -> None:
+    sent: list[Message] = []
+    incoming = iter(
+        (
+            {"type": "http.request", "body": b"ab", "more_body": True},
+            {"type": "http.request", "body": b"cd", "more_body": False},
+            {"type": "http.disconnect"},
+        )
+    )
+
+    async def downstream(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope
+        assert await receive() == {
+            "type": "http.request",
+            "body": b"abcd",
+            "more_body": False,
+        }
+        assert await receive() == {"type": "http.disconnect"}
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive() -> Message:
+        return cast(Message, next(incoming))
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    middleware = RequestSizeLimitMiddleware(cast(ASGIApp, downstream), max_bytes=4)
+    asyncio.run(middleware(http_scope(), receive, send))
+
+    assert sent[0]["status"] == 204

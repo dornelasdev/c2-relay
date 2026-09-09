@@ -20,7 +20,7 @@ dependency on FastAPI, SQLAlchemy, or a wire transport.
 
 - Agent metadata contains bounded self-reported host facts. Network addresses are deliberately
   excluded because a server must derive them from the connection rather than trust client input.
-- Actions are a discriminated allowlist. Version `0.1.0` supports only hostname, current-user,
+- Actions are a discriminated allowlist. Version `0.2.0` supports only hostname, current-user,
   and operating-system discovery contracts; arbitrary command payloads cannot be represented.
 - Results distinguish structured success output from bounded, machine-readable failure details.
 - Tasks follow an explicit lifecycle. All models require offset-aware timestamps and normalize
@@ -34,8 +34,9 @@ claimed -> queued | running | expired | cancelled
 running -> completed | failed | cancelled
 ```
 
-Completed, failed, expired, and cancelled tasks are terminal. A claim carries a bounded lease;
-expired claims return to the queue during the agent's next poll.
+Completed, failed, expired, and cancelled tasks are terminal. `expired` is reserved for a future
+terminal-expiry policy and is not emitted by current application services. A claim instead carries
+a bounded lease; elapsed claims return to the queue during the agent's next poll.
 
 ## Configuration
 

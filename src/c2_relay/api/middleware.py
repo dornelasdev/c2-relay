@@ -153,10 +153,6 @@ class AuthenticationFailureLimitMiddleware:
         return "unknown" if client is None else str(client[0])
 
 
-class RequestBodyTooLargeError(Exception):
-    pass
-
-
 class RequestSizeLimitMiddleware:
     def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
         self._app = app
@@ -179,21 +175,38 @@ class RequestSizeLimitMiddleware:
             await self._reject(scope, receive, send)
             return
 
-        received = 0
-
-        async def limited_receive() -> Message:
-            nonlocal received
+        body = bytearray()
+        body_complete = False
+        terminal_message: Message | None = None
+        while not body_complete:
             message = await receive()
-            if message["type"] == "http.request":
-                received += len(message.get("body", b""))
-                if received > self._max_bytes:
-                    raise RequestBodyTooLargeError
-            return message
+            if message["type"] != "http.request":
+                terminal_message = message
+                break
+            body.extend(message.get("body", b""))
+            if len(body) > self._max_bytes:
+                await self._reject(scope, receive, send)
+                return
+            body_complete = not message.get("more_body", False)
 
-        try:
-            await self._app(scope, limited_receive, send)
-        except RequestBodyTooLargeError:
-            await self._reject(scope, receive, send)
+        body_sent = False
+        terminal_sent = False
+
+        async def buffered_receive() -> Message:
+            nonlocal body_sent, terminal_sent
+            if not body_sent and (body or body_complete):
+                body_sent = True
+                return {
+                    "type": "http.request",
+                    "body": bytes(body),
+                    "more_body": not body_complete,
+                }
+            if terminal_message is not None and not terminal_sent:
+                terminal_sent = True
+                return terminal_message
+            return await receive()
+
+        await self._app(scope, buffered_receive, send)
 
     @staticmethod
     async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
