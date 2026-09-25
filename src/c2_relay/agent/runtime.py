@@ -84,7 +84,7 @@ class AgentRuntime:
         task = self._client.next_task(identity.agent_id, identity.credential)
         if task is None:
             return
-        result = self._actions.execute(task, identity.agent_id, completed_at=self._clock())
+        result = self._actions.execute(task, identity.agent_id, clock=self._clock)
         self._result_store.save(result)
         self._deliver_result(identity, result)
 

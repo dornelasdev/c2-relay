@@ -46,26 +46,28 @@ class ActionRegistry:
             ActionKind.OPERATING_SYSTEM: _operating_system,
         }
 
-    def execute(self, task: Task, agent_id: AgentId, *, completed_at: datetime) -> ActionResult:
+    def execute(
+        self, task: Task, agent_id: AgentId, *, clock: Callable[[], datetime]
+    ) -> ActionResult:
         try:
             output = self._handlers[task.action.kind]()
             if output.kind != task.action.kind:
                 msg = "action handler returned an incompatible output"
                 raise ValueError(msg)
-            return ActionSuccess(
-                task_id=task.id,
-                agent_id=agent_id,
-                completed_at=completed_at,
-                output=output,
-            )
         except Exception as exc:
             return ActionFailure(
                 task_id=task.id,
                 agent_id=agent_id,
-                completed_at=completed_at,
+                completed_at=clock(),
                 error=ErrorDetail(
                     code="action_failed",
                     message=str(exc) or type(exc).__name__,
                     retryable=False,
                 ),
             )
+        return ActionSuccess(
+            task_id=task.id,
+            agent_id=agent_id,
+            completed_at=clock(),
+            output=output,
+        )

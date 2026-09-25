@@ -13,6 +13,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   readable and recoverable after migrating to v0.2.
 - Serialize agent disabling with task polling so a revoked agent cannot claim a task after
   its credentials have been checked.
+- Record agent result completion time after the action handler finishes, including failures.
 
 ## [0.2.0] - 2026-09-10
 

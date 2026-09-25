@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import UUID
 
@@ -55,7 +55,7 @@ def test_registry_executes_allowlisted_actions(
 ) -> None:
     registry = ActionRegistry({action.kind: handler})
 
-    result = registry.execute(task(action), AGENT_ID, completed_at=NOW)
+    result = registry.execute(task(action), AGENT_ID, clock=lambda: NOW)
 
     assert isinstance(result, ActionSuccess)
     assert isinstance(result.output, expected)
@@ -71,10 +71,33 @@ def test_registry_executes_allowlisted_actions(
 def test_registry_returns_a_structured_failure(handler: ActionHandler) -> None:
     kind = ActionKind.HOSTNAME if "throw" in repr(handler) else ActionKind.CURRENT_USER
     action = HostnameAction() if kind is ActionKind.HOSTNAME else CurrentUserAction()
-    result = ActionRegistry({kind: handler}).execute(task(action), AGENT_ID, completed_at=NOW)
+    result = ActionRegistry({kind: handler}).execute(task(action), AGENT_ID, clock=lambda: NOW)
 
     assert isinstance(result, ActionFailure)
     assert result.error.code == "action_failed"
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_completion_time_is_captured_after_handler(fails: bool) -> None:
+    calls: list[str] = []
+
+    def handler() -> HostnameOutput:
+        calls.append("handler")
+        if fails:
+            raise RuntimeError("collection failed")
+        return HostnameOutput(hostname="host")
+
+    def clock() -> datetime:
+        calls.append("clock")
+        return NOW + timedelta(seconds=5)
+
+    result = ActionRegistry({ActionKind.HOSTNAME: handler}).execute(
+        task(HostnameAction()), AGENT_ID, clock=clock
+    )
+
+    assert calls == ["handler", "clock"]
+    assert result.completed_at == NOW + timedelta(seconds=5)
+    assert isinstance(result, ActionFailure if fails else ActionSuccess)
 
 
 def test_default_registry_collects_user_and_operating_system() -> None:
@@ -86,8 +109,8 @@ def test_default_registry_collects_user_and_operating_system() -> None:
         patch("c2_relay.agent.actions.platform.version", return_value="build"),
         patch("c2_relay.agent.actions.platform.machine", return_value="x86_64"),
     ):
-        user_result = registry.execute(task(CurrentUserAction()), AGENT_ID, completed_at=NOW)
-        os_result = registry.execute(task(OperatingSystemAction()), AGENT_ID, completed_at=NOW)
+        user_result = registry.execute(task(CurrentUserAction()), AGENT_ID, clock=lambda: NOW)
+        os_result = registry.execute(task(OperatingSystemAction()), AGENT_ID, clock=lambda: NOW)
 
     assert isinstance(user_result, ActionSuccess)
     assert user_result.output == CurrentUserOutput(username="user")
