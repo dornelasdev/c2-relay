@@ -7,6 +7,11 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Requeue pre-lease `claimed` tasks during database upgrade so existing v0.1 tasks remain
+  readable and recoverable after migrating to v0.2.
+
 ## [0.2.0] - 2026-09-10
 
 ### Added
