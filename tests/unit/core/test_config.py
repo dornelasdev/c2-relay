@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr, ValidationError
 
 from c2_relay.core.config import Environment, Settings, get_settings
 
@@ -41,6 +42,39 @@ def test_settings_read_prefixed_environment(
     assert settings.log_level == "DEBUG"
     assert settings.auth_failure_limit == 5
     assert settings.auth_failure_window_seconds == 30.0
+
+
+def test_blank_bootstrap_token_in_env_file_disables_enrollment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("C2_RELAY_BOOTSTRAP_TOKEN=\n", encoding="utf-8")
+
+    assert Settings().bootstrap_token is None
+
+
+def test_blank_environment_token_overrides_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(f"C2_RELAY_BOOTSTRAP_TOKEN={'x' * 32}\n", encoding="utf-8")
+    monkeypatch.setenv("C2_RELAY_BOOTSTRAP_TOKEN", "")
+
+    assert Settings().bootstrap_token is None
+
+
+def test_direct_blank_secret_disables_enrollment() -> None:
+    assert Settings(bootstrap_token=SecretStr("")).bootstrap_token is None
+
+
+def test_nonblank_bootstrap_token_still_requires_minimum_length() -> None:
+    with pytest.raises(ValidationError) as error:
+        Settings(bootstrap_token=SecretStr("short"))
+    assert error.value.errors()[0]["type"] == "too_short"
+
+    configured = Settings(bootstrap_token=SecretStr("x" * 32)).bootstrap_token
+    assert configured is not None
+    assert configured.get_secret_value() == "x" * 32
 
 
 def test_get_settings_is_cached() -> None:

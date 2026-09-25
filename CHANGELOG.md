@@ -16,6 +16,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Record agent result completion time after the action handler finishes, including failures.
 - Reject existing agent identity and pending-result files that are symlinks, not regular files,
   not owned by the current user, or not mode `0600`.
+- Treat an empty bootstrap token as disabled enrollment while retaining validation for nonempty
+  tokens shorter than 32 characters.
 
 ## [0.2.0] - 2026-09-10
 
