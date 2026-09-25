@@ -11,6 +11,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Requeue pre-lease `claimed` tasks during database upgrade so existing v0.1 tasks remain
   readable and recoverable after migrating to v0.2.
+- Serialize agent disabling with task polling so a revoked agent cannot claim a task after
+  its credentials have been checked.
 
 ## [0.2.0] - 2026-09-10
 

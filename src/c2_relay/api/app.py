@@ -359,9 +359,10 @@ def _router(
         operator: Annotated[Operator, Depends(require_operator)],
     ) -> RegisteredAgent:
         with UnitOfWork(factory) as uow:
-            agent = uow.agents.get(agent_id)
-            if agent is None:
+            if not uow.agents.lock_for_update(agent_id):
                 raise HTTPException(HTTPStatus.NOT_FOUND, "agent not found")
+            agent = uow.agents.get(agent_id)
+            assert agent is not None
             if agent.status is AgentStatus.DISABLED:
                 return agent
             now = clock()
@@ -386,6 +387,8 @@ def _router(
         _require_agent(factory, agent_id, authorization)
         now = clock()
         with UnitOfWork(factory) as uow:
+            if not uow.agents.lock_for_update(agent_id, active_only=True):
+                raise unauthorized()
             task = uow.tasks.claim_next(
                 agent_id,
                 now=now,

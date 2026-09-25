@@ -13,7 +13,12 @@ from pydantic import SecretStr
 from c2_relay.api import create_app
 from c2_relay.core.config import Settings
 from c2_relay.core.security import IdempotencyKeyDigest
-from c2_relay.db.repositories import AuditRepository, ResultRepository, TaskRepository
+from c2_relay.db.repositories import (
+    AgentRepository,
+    AuditRepository,
+    ResultRepository,
+    TaskRepository,
+)
 from c2_relay.db.schema import Base
 from c2_relay.db.session import create_database_engine, create_session_factory
 from c2_relay.models import (
@@ -765,6 +770,39 @@ def test_polling_claims_oldest_task_once(client: TestClient) -> None:
         headers=agent_headers(credential),
     )
     assert empty.json() == {"task": None}
+
+
+def test_disable_between_authentication_and_poll_prevents_claim(client: TestClient) -> None:
+    agent_id, credential = enroll(client)
+    task = create_task(client, agent_id)
+    lock_agent = AgentRepository.lock_for_update
+
+    def disable_before_lock(
+        repository: AgentRepository,
+        polled_agent_id: AgentId,
+        *,
+        active_only: bool = False,
+    ) -> bool:
+        if not active_only:
+            return lock_agent(repository, polled_agent_id, active_only=active_only)
+        response = client.post(
+            f"/api/v1/agents/{agent_id}/disable",
+            headers=operator_headers(),
+        )
+        assert response.status_code == 200
+        return lock_agent(repository, polled_agent_id, active_only=active_only)
+
+    with patch.object(AgentRepository, "lock_for_update", new=disable_before_lock):
+        response = client.get(
+            f"/api/v1/agents/{agent_id}/tasks/next",
+            headers=agent_headers(credential),
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid credentials"}
+    stored = client.get(f"/api/v1/tasks/{task['id']}", headers=operator_headers())
+    assert stored.status_code == 200
+    assert stored.json()["status"] == "queued"
 
 
 def test_expired_claim_is_rejected_then_recovered(

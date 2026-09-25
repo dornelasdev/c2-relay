@@ -65,6 +65,16 @@ class AgentRepository:
         row = self._session.get(AgentRow, agent_id)
         return None if row is None else CredentialDigest(row.credential_digest)
 
+    def lock_for_update(self, agent_id: AgentId, *, active_only: bool = False) -> bool:
+        filters = [AgentRow.id == agent_id]
+        if active_only:
+            filters.append(AgentRow.status == AgentStatus.ACTIVE.value)
+        # SQLite ignores SELECT FOR UPDATE; this no-op write serializes polls and disables.
+        locked_id = self._session.scalar(
+            update(AgentRow).where(*filters).values(status=AgentRow.status).returning(AgentRow.id)
+        )
+        return locked_id is not None
+
     def list_page(
         self,
         *,
