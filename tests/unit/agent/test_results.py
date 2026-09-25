@@ -2,6 +2,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
+import pytest
+
 from c2_relay.agent.results import PendingResultStore
 from c2_relay.models import ActionSuccess, AgentId, HostnameOutput, TaskId
 
@@ -29,3 +31,13 @@ def test_pending_result_store_round_trip_and_clear(tmp_path: Path) -> None:
     store.clear()
     store.clear()
     assert store.load() is None
+
+
+def test_pending_result_store_rejects_insecure_existing_file(tmp_path: Path) -> None:
+    path = tmp_path / "pending-result.json"
+    store = PendingResultStore(path)
+    store.save(result())
+    path.chmod(0o644)
+
+    with pytest.raises(PermissionError, match="mode 0600"):
+        store.load()

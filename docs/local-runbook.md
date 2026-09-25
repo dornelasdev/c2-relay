@@ -66,6 +66,8 @@ facts are self-reported inventory, not independently verified evidence.
 If result submission is interrupted, the agent temporarily stores `pending-result.json` with the
 same owner-only permissions. The file is removed after successful delivery or a permanent stale
 result response.
+On startup, the agent rejects either existing state file if it is a symlink, is not a regular file,
+is owned by another user, or has a mode other than `0600`.
 
 In Swagger UI, select **Authorize** and enter the operator credential. Then use the agent
 identifier displayed in `agent-state.json` to create one task for each allowlisted action:

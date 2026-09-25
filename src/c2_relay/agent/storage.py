@@ -1,7 +1,9 @@
 """Owner-only atomic JSON storage for local agent state."""
 
+import errno
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -12,9 +14,29 @@ class AtomicJsonStore:
         self._path = path
 
     def load(self) -> dict[str, Any] | None:
-        if not self._path.exists():
+        try:
+            descriptor = os.open(self._path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
             return None
-        payload = json.loads(self._path.read_text(encoding="utf-8"))
+        except OSError as error:
+            if error.errno == errno.ELOOP:
+                message = f"local state must not be a symbolic link: {self._path}"
+                raise PermissionError(message) from error
+            raise
+        try:
+            file_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ValueError(f"local state must be a regular file: {self._path}")
+            if stat.S_IMODE(file_stat.st_mode) != 0o600:
+                raise PermissionError(f"local state file must have mode 0600: {self._path}")
+            if file_stat.st_uid != os.getuid():
+                message = f"local state file must be owned by the current user: {self._path}"
+                raise PermissionError(message)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            payload = json.load(stream)
         if not isinstance(payload, dict):
             raise ValueError("local state must contain a JSON object")
         return payload

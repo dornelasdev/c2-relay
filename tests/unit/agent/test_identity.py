@@ -43,6 +43,56 @@ def test_identity_store_cleans_up_a_failed_atomic_write(tmp_path: Path) -> None:
 def test_identity_store_rejects_non_object_state(tmp_path: Path) -> None:
     path = tmp_path / "identity.json"
     path.write_text("[]", encoding="utf-8")
+    path.chmod(0o600)
 
     with pytest.raises(ValueError, match="must contain a JSON object"):
+        IdentityStore(path).load()
+
+
+@pytest.mark.parametrize("mode", [0o644, 0o660, 0o400])
+def test_identity_store_rejects_incorrect_existing_mode(tmp_path: Path, mode: int) -> None:
+    path = tmp_path / "identity.json"
+    IdentityStore(path).save(identity())
+    path.chmod(mode)
+
+    with pytest.raises(PermissionError, match="mode 0600"):
+        IdentityStore(path).load()
+
+
+def test_identity_store_rejects_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "identity.json"
+    IdentityStore(target).save(identity())
+    link = tmp_path / "identity-link.json"
+    link.symlink_to(target)
+
+    with pytest.raises(PermissionError, match="symbolic link"):
+        IdentityStore(link).load()
+
+
+def test_identity_store_preserves_other_open_errors(tmp_path: Path) -> None:
+    path = tmp_path / "identity.json"
+
+    with (
+        patch("c2_relay.agent.storage.os.open", side_effect=PermissionError("access denied")),
+        pytest.raises(PermissionError, match="access denied"),
+    ):
+        IdentityStore(path).load()
+
+
+def test_identity_store_rejects_non_regular_file(tmp_path: Path) -> None:
+    path = tmp_path / "identity.json"
+    path.mkdir()
+
+    with pytest.raises(ValueError, match="regular file"):
+        IdentityStore(path).load()
+
+
+def test_identity_store_rejects_another_owner(tmp_path: Path) -> None:
+    path = tmp_path / "identity.json"
+    IdentityStore(path).save(identity())
+
+    with (
+        patch("c2_relay.agent.storage.os.getuid", return_value=path.stat().st_uid + 1),
+        pytest.raises(PermissionError, match="owned by the current user"),
+    ):
         IdentityStore(path).load()
