@@ -59,7 +59,7 @@ a shell.
 
 ## Platform support
 
-Version `0.2.0` supports Linux and macOS. Host-information actions use cross-platform Python
+Version `0.2.1` supports Linux and macOS. Host-information actions use cross-platform Python
 APIs, but local credential protection currently relies on POSIX `0600` file permissions.
 
 Windows is not considered securely supported yet. Equivalent Windows support requires native

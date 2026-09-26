@@ -7,10 +7,12 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-26
+
 ### Fixed
 
 - Requeue pre-lease `claimed` tasks during database upgrade so existing v0.1 tasks remain
-  readable and recoverable after migrating to v0.2.
+  readable and recoverable after upgrading to v0.2.1.
 - Serialize agent disabling with task polling so a revoked agent cannot claim a task after
   its credentials have been checked.
 - Record agent result completion time after the action handler finishes, including failures.
@@ -110,6 +112,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added reproducible `uv` dependency management, strict Ruff and mypy checks, pytest coverage
   enforcement, packaging, CI, architecture documentation, and a local runbook.
 
-[Unreleased]: https://github.com/dornelasdev/c2-relay/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dornelasdev/c2-relay/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/dornelasdev/c2-relay/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dornelasdev/c2-relay/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dornelasdev/c2-relay/releases/tag/v0.1.0

@@ -104,7 +104,7 @@ def test_openapi_describes_versioned_routes_and_bearer_authentication(tmp_path: 
     with TestClient(create_app(settings)) as client:
         schema = client.get("/openapi.json").json()
 
-    assert schema["info"]["version"] == "0.2.0"
+    assert schema["info"]["version"] == "0.2.1"
     assert "/api/v1/agents/{agent_id}/tasks/next" in schema["paths"]
     assert schema["components"]["securitySchemes"]["HTTPBearer"] == {
         "type": "http",

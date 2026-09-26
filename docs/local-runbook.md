@@ -1,6 +1,6 @@
 # Local verification runbook
 
-This runbook verifies the assembled `0.2.0` workflow on an authorized local machine.
+This runbook verifies the assembled `0.2.1` workflow on an authorized local machine.
 
 ## Prepare
 
