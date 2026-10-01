@@ -7,6 +7,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added enrollment-grant domain records and migration `20261001_0009`, with issuer attribution,
+  expiry, mutually exclusive redemption/revocation records, and unique token-digest storage.
+  Grant issuance and redemption endpoints are not yet connected; existing enrollment behavior
+  remains unchanged in this foundation section.
+
 ## [0.2.1] - 2026-09-26
 
 ### Fixed

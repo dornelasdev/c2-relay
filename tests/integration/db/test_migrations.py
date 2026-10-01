@@ -35,6 +35,7 @@ def test_migrations_upgrade_and_downgrade(tmp_path: Path) -> None:
         "agents",
         "alembic_version",
         "audit_events",
+        "enrollment_grants",
         "operators",
         "tasks",
         "task_results",
@@ -69,6 +70,9 @@ def test_migrations_upgrade_and_downgrade(tmp_path: Path) -> None:
         "ix_audit_events_task_occurred",
         "ix_audit_events_type_occurred",
     }
+
+    command.downgrade(config, "20260925_0008")
+    assert "enrollment_grants" not in inspect(engine).get_table_names()
 
     command.downgrade(config, "20260902_0007")
     assert "lease_expires_at" in {column["name"] for column in inspect(engine).get_columns("tasks")}

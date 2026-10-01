@@ -20,6 +20,7 @@ from c2_relay.models.agents import (
 )
 from c2_relay.models.audit import AuditEvent, AuditEventId, AuditEventType
 from c2_relay.models.common import AgentId, DomainModel, TaskId, UtcDateTime
+from c2_relay.models.enrollment import EnrollmentGrant, EnrollmentGrantId
 from c2_relay.models.operators import Operator, OperatorId, OperatorStatus
 from c2_relay.models.results import (
     ActionFailure,
@@ -46,6 +47,8 @@ __all__ = [
     "CurrentUserAction",
     "CurrentUserOutput",
     "DomainModel",
+    "EnrollmentGrant",
+    "EnrollmentGrantId",
     "ErrorDetail",
     "HostnameAction",
     "HostnameOutput",

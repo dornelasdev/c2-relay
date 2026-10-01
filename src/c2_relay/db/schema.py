@@ -54,6 +54,47 @@ class OperatorRow(Base):
     last_authenticated_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
+class EnrollmentGrantRow(Base):
+    __tablename__ = "enrollment_grants"
+    __table_args__ = (
+        CheckConstraint("expires_at > created_at", name="ck_enrollment_grants_expiry"),
+        CheckConstraint(
+            "(redeemed_at IS NULL AND redeemed_by_agent_id IS NULL) OR "
+            "(redeemed_at IS NOT NULL AND redeemed_by_agent_id IS NOT NULL "
+            "AND redeemed_at >= created_at AND redeemed_at < expires_at)",
+            name="ck_enrollment_grants_redemption",
+        ),
+        CheckConstraint(
+            "(revoked_at IS NULL AND revoked_by_operator_id IS NULL) OR "
+            "(revoked_at IS NOT NULL AND revoked_by_operator_id IS NOT NULL "
+            "AND revoked_at >= created_at)",
+            name="ck_enrollment_grants_revocation",
+        ),
+        CheckConstraint(
+            "redeemed_at IS NULL OR revoked_at IS NULL", name="ck_enrollment_grants_terminal"
+        ),
+        CheckConstraint("length(token_digest) = 64", name="ck_enrollment_grants_digest_length"),
+        UniqueConstraint("token_digest", name="uq_enrollment_grants_token_digest"),
+        Index("ix_enrollment_grants_created", "created_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    issued_by_operator_id: Mapped[UUID] = mapped_column(
+        ForeignKey("operators.id", ondelete="RESTRICT"), nullable=False
+    )
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    redeemed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    redeemed_by_agent_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="RESTRICT")
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    revoked_by_operator_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("operators.id", ondelete="RESTRICT")
+    )
+
+
 class AuditEventRow(Base):
     __tablename__ = "audit_events"
     __table_args__ = (

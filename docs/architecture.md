@@ -76,6 +76,27 @@ Agent credential material is never accepted by persistence repositories. They ac
 fixed-length SHA-256 digest produced from a high-entropy token. Credential generation and HTTP
 authentication are owned by the API layer.
 
+## Enrollment grants (v0.3 foundation)
+
+`EnrollmentGrant` is a non-secret record containing its issuing operator, creation and expiry
+times, and an optional redemption or revocation outcome. Redemption records the enrolled agent;
+revocation records the responsible operator. Both require a timestamp and cannot coexist.
+Redemption must occur at or after creation and strictly before expiry. An expired unused grant
+may still be revoked. Expiry is evaluated from timestamps rather than a stored status that would
+require a background update.
+
+The `enrollment_grants` table stores only a unique SHA-256 token digest alongside that record.
+Foreign keys preserve attribution, and database constraints enforce the same lifecycle
+invariants as the domain model. Migration `20261001_0009` adds this table without changing
+existing agent or operator records.
+
+This section provides contracts and storage only. Issuance, bounded token lifetimes, atomic
+single-use redemption with agent creation, and audit events will be connected in the next
+implementation section. The compatibility policy for that step is grant-based enrollment by
+default, with legacy shared-bootstrap enrollment available through an explicit opt-in in
+addition to a configured bootstrap token. Already enrolled agents retain their identities.
+Until that integration is implemented, the current bootstrap enrollment behavior still applies.
+
 ## HTTP API
 
 FastAPI exposes versioned routes under `/api/v1`. The transport layer validates requests and
