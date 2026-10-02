@@ -7,8 +7,15 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from c2_relay.core.security import CredentialDigest, IdempotencyKeyDigest
-from c2_relay.db.schema import AgentRow, AuditEventRow, OperatorRow, TaskResultRow, TaskRow
+from c2_relay.core.security import CredentialDigest, EnrollmentTokenDigest, IdempotencyKeyDigest
+from c2_relay.db.schema import (
+    AgentRow,
+    AuditEventRow,
+    EnrollmentGrantRow,
+    OperatorRow,
+    TaskResultRow,
+    TaskRow,
+)
 from c2_relay.models import (
     ActionResult,
     AgentId,
@@ -17,6 +24,8 @@ from c2_relay.models import (
     AuditEvent,
     AuditEventId,
     AuditEventType,
+    EnrollmentGrant,
+    EnrollmentGrantId,
     Operator,
     OperatorId,
     OperatorStatus,
@@ -183,6 +192,48 @@ class OperatorRepository:
         )
 
 
+class EnrollmentGrantRepository:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, grant: EnrollmentGrant, token_digest: EnrollmentTokenDigest) -> None:
+        self._session.add(
+            EnrollmentGrantRow(
+                **grant.model_dump(),
+                token_digest=token_digest,
+            )
+        )
+        self._session.flush()
+
+    def get(self, grant_id: EnrollmentGrantId) -> EnrollmentGrant | None:
+        row = self._session.get(EnrollmentGrantRow, grant_id)
+        return None if row is None else self._to_domain(row)
+
+    def revoke_if_pending(
+        self,
+        grant_id: EnrollmentGrantId,
+        *,
+        operator_id: OperatorId,
+        now: datetime,
+    ) -> tuple[EnrollmentGrant | None, bool]:
+        revoked_id = self._session.scalar(
+            update(EnrollmentGrantRow)
+            .where(
+                EnrollmentGrantRow.id == grant_id,
+                EnrollmentGrantRow.redeemed_at.is_(None),
+                EnrollmentGrantRow.revoked_at.is_(None),
+            )
+            .values(revoked_at=now, revoked_by_operator_id=operator_id)
+            .returning(EnrollmentGrantRow.id)
+        )
+        self._session.flush()
+        return self.get(grant_id), revoked_id is not None
+
+    @staticmethod
+    def _to_domain(row: EnrollmentGrantRow) -> EnrollmentGrant:
+        return EnrollmentGrant.model_validate(row, from_attributes=True)
+
+
 class AuditRepository:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -196,6 +247,7 @@ class AuditRepository:
                 operator_id=event.operator_id,
                 agent_id=event.agent_id,
                 task_id=event.task_id,
+                enrollment_grant_id=event.enrollment_grant_id,
             )
         )
         self._session.flush()
@@ -207,6 +259,7 @@ class AuditRepository:
         operator_id: OperatorId | None,
         agent_id: AgentId | None,
         task_id: TaskId | None,
+        enrollment_grant_id: EnrollmentGrantId | None,
         limit: int,
         offset: int,
     ) -> tuple[tuple[AuditEvent, ...], int]:
@@ -219,6 +272,8 @@ class AuditRepository:
             filters.append(AuditEventRow.agent_id == agent_id)
         if task_id is not None:
             filters.append(AuditEventRow.task_id == task_id)
+        if enrollment_grant_id is not None:
+            filters.append(AuditEventRow.enrollment_grant_id == enrollment_grant_id)
         total = self._session.scalar(
             select(func.count()).select_from(AuditEventRow).where(*filters)
         )
@@ -238,8 +293,13 @@ class AuditRepository:
             event_type=AuditEventType(row.event_type),
             occurred_at=row.occurred_at,
             operator_id=None if row.operator_id is None else OperatorId(row.operator_id),
-            agent_id=AgentId(row.agent_id),
+            agent_id=None if row.agent_id is None else AgentId(row.agent_id),
             task_id=None if row.task_id is None else TaskId(row.task_id),
+            enrollment_grant_id=(
+                None
+                if row.enrollment_grant_id is None
+                else EnrollmentGrantId(row.enrollment_grant_id)
+            ),
         )
 
 

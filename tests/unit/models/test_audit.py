@@ -9,6 +9,7 @@ from c2_relay.models import (
     AuditEvent,
     AuditEventId,
     AuditEventType,
+    EnrollmentGrantId,
     OperatorId,
     TaskId,
 )
@@ -18,33 +19,40 @@ EVENT_ID = AuditEventId(UUID("40000000-0000-4000-8000-000000000001"))
 OPERATOR_ID = OperatorId(UUID("30000000-0000-4000-8000-000000000001"))
 AGENT_ID = AgentId(UUID("20000000-0000-4000-8000-000000000001"))
 TASK_ID = TaskId(UUID("10000000-0000-4000-8000-000000000001"))
+GRANT_ID = EnrollmentGrantId(UUID("50000000-0000-4000-8000-000000000001"))
 
 
 @pytest.mark.parametrize(
-    ("event_type", "has_operator", "has_task"),
+    ("event_type", "has_operator", "has_agent", "has_task", "has_grant"),
     [
-        (AuditEventType.AGENT_ENROLLED, False, False),
-        (AuditEventType.AGENT_METADATA_UPDATED, False, False),
-        (AuditEventType.AGENT_DISABLED, True, False),
-        (AuditEventType.TASK_CREATED, True, True),
-        (AuditEventType.TASK_CLAIMED, False, True),
-        (AuditEventType.TASK_CANCELLED, True, True),
-        (AuditEventType.TASK_COMPLETED, False, True),
-        (AuditEventType.TASK_FAILED, False, True),
+        (AuditEventType.AGENT_ENROLLED, False, True, False, False),
+        (AuditEventType.AGENT_METADATA_UPDATED, False, True, False, False),
+        (AuditEventType.AGENT_DISABLED, True, True, False, False),
+        (AuditEventType.TASK_CREATED, True, True, True, False),
+        (AuditEventType.TASK_CLAIMED, False, True, True, False),
+        (AuditEventType.TASK_CANCELLED, True, True, True, False),
+        (AuditEventType.TASK_COMPLETED, False, True, True, False),
+        (AuditEventType.TASK_FAILED, False, True, True, False),
+        (AuditEventType.ENROLLMENT_GRANT_ISSUED, True, False, False, True),
+        (AuditEventType.ENROLLMENT_GRANT_REVOKED, True, False, False, True),
+        (AuditEventType.ENROLLMENT_GRANT_REDEEMED, False, True, False, True),
     ],
 )
 def test_audit_event_requires_expected_references(
     event_type: AuditEventType,
     has_operator: bool,
+    has_agent: bool,
     has_task: bool,
+    has_grant: bool,
 ) -> None:
     event = AuditEvent(
         id=EVENT_ID,
         event_type=event_type,
         occurred_at=NOW,
         operator_id=OPERATOR_ID if has_operator else None,
-        agent_id=AGENT_ID,
+        agent_id=AGENT_ID if has_agent else None,
         task_id=TASK_ID if has_task else None,
+        enrollment_grant_id=GRANT_ID if has_grant else None,
     )
 
     assert event.event_type is event_type
@@ -62,6 +70,19 @@ def test_audit_event_requires_expected_references(
             "event_type": AuditEventType.TASK_CREATED,
             "operator_id": OPERATOR_ID,
             "task_id": None,
+        },
+        {
+            "event_type": AuditEventType.ENROLLMENT_GRANT_ISSUED,
+            "operator_id": OPERATOR_ID,
+            "agent_id": None,
+            "task_id": None,
+        },
+        {
+            "event_type": AuditEventType.ENROLLMENT_GRANT_ISSUED,
+            "operator_id": OPERATOR_ID,
+            "agent_id": AGENT_ID,
+            "task_id": None,
+            "enrollment_grant_id": GRANT_ID,
         },
     ],
 )

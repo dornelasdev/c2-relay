@@ -12,6 +12,7 @@ from c2_relay.models import (
     AgentMetadata,
     AuditEvent,
     DomainModel,
+    EnrollmentGrant,
     RegisteredAgent,
     StoredActionResult,
     Task,
@@ -31,6 +32,15 @@ class EnrollmentRequest(AgentMetadata):
 class EnrollmentResponse(DomainModel):
     agent_id: AgentId
     credential: Annotated[str, Field(min_length=32, max_length=128)]
+
+
+class EnrollmentGrantCreateRequest(TransportModel):
+    expires_in_seconds: Annotated[int, Field(ge=60, le=86_400)] = 900
+
+
+class EnrollmentGrantIssueResponse(DomainModel):
+    grant: EnrollmentGrant
+    token: Annotated[str, Field(min_length=72, max_length=172)]
 
 
 class CheckInRequest(AgentMetadata):

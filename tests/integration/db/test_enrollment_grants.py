@@ -10,8 +10,12 @@ from sqlalchemy import Engine, inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from c2_relay.core.security import digest_credential
-from c2_relay.db.repositories import AgentRepository, OperatorRepository
+from c2_relay.core.security import digest_credential, digest_enrollment_token
+from c2_relay.db.repositories import (
+    AgentRepository,
+    EnrollmentGrantRepository,
+    OperatorRepository,
+)
 from c2_relay.db.schema import Base, EnrollmentGrantRow
 from c2_relay.db.session import create_database_engine
 from c2_relay.models import (
@@ -69,7 +73,7 @@ def row_values() -> dict[str, object]:
     return {
         "id": GRANT_ID,
         "issued_by_operator_id": OPERATOR_ID,
-        "token_digest": digest_credential(TOKEN),
+        "token_digest": digest_enrollment_token(TOKEN),
         "created_at": NOW,
         "expires_at": NOW + timedelta(minutes=15),
     }
@@ -85,7 +89,7 @@ def test_grant_storage_preserves_existing_identities_and_keeps_only_digest(engin
     with Session(engine) as session:
         stored = session.get(EnrollmentGrantRow, GRANT_ID)
         assert stored is not None
-        assert stored.token_digest == digest_credential(TOKEN)
+        assert stored.token_digest == digest_enrollment_token(TOKEN)
         assert stored.token_digest != TOKEN
         grant = EnrollmentGrant.model_validate(stored, from_attributes=True)
         assert grant.id == GRANT_ID
@@ -151,3 +155,64 @@ def test_grant_digest_is_unique(engine: Engine) -> None:
         session.add(EnrollmentGrantRow(**(row_values() | {"id": UUID(int=2)})))
         with pytest.raises(IntegrityError):
             session.commit()
+
+
+def test_grant_repository_adds_gets_and_revokes_once(engine: Engine) -> None:
+    grant = EnrollmentGrant(
+        id=GRANT_ID,
+        issued_by_operator_id=OPERATOR_ID,
+        created_at=NOW,
+        expires_at=NOW + timedelta(minutes=15),
+    )
+    with Session(engine) as session:
+        repository = EnrollmentGrantRepository(session)
+        repository.add(grant, digest_enrollment_token(TOKEN))
+        session.commit()
+        assert repository.get(GRANT_ID) == grant
+        assert repository.get(EnrollmentGrantId(UUID(int=0))) is None
+
+        revoked, transitioned = repository.revoke_if_pending(
+            GRANT_ID,
+            operator_id=OPERATOR_ID,
+            now=NOW + timedelta(minutes=16),
+        )
+        session.commit()
+        assert transitioned is True
+        assert revoked is not None
+        assert revoked.revoked_at == NOW + timedelta(minutes=16)
+        assert revoked.revoked_by_operator_id == OPERATOR_ID
+
+        repeated, transitioned = repository.revoke_if_pending(
+            GRANT_ID,
+            operator_id=OPERATOR_ID,
+            now=NOW + timedelta(minutes=17),
+        )
+        assert transitioned is False
+        assert repeated == revoked
+
+
+def test_grant_repository_does_not_revoke_redeemed_or_missing_grant(engine: Engine) -> None:
+    with Session(engine) as session:
+        session.add(
+            EnrollmentGrantRow(
+                **(row_values() | {"redeemed_at": NOW, "redeemed_by_agent_id": AGENT_ID})
+            )
+        )
+        session.commit()
+        repository = EnrollmentGrantRepository(session)
+
+        redeemed, transitioned = repository.revoke_if_pending(
+            GRANT_ID,
+            operator_id=OPERATOR_ID,
+            now=NOW + timedelta(seconds=1),
+        )
+        assert transitioned is False
+        assert redeemed is not None and redeemed.redeemed_at == NOW
+
+        missing, transitioned = repository.revoke_if_pending(
+            EnrollmentGrantId(UUID(int=0)),
+            operator_id=OPERATOR_ID,
+            now=NOW,
+        )
+        assert transitioned is False
+        assert missing is None

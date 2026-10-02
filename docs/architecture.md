@@ -90,12 +90,17 @@ Foreign keys preserve attribution, and database constraints enforce the same lif
 invariants as the domain model. Migration `20261001_0009` adds this table without changing
 existing agent or operator records.
 
-This section provides contracts and storage only. Issuance, bounded token lifetimes, atomic
-single-use redemption with agent creation, and audit events will be connected in the next
-implementation section. The compatibility policy for that step is grant-based enrollment by
-default, with legacy shared-bootstrap enrollment available through an explicit opt-in in
-addition to a configured bootstrap token. Already enrolled agents retain their identities.
-Until that integration is implemented, the current bootstrap enrollment behavior still applies.
+Authenticated operators can issue grants with lifetimes from 60 seconds through 24 hours. The
+complete token is returned only in the creation response; persistence retains only the digest of
+its secret. Revocation is an idempotent transition, remains available after expiry, and records
+the responsible operator. Issuance and the first successful revocation each create a filterable
+audit event without storing token material.
+
+Atomic single-use redemption with agent creation will be connected in the next implementation
+slice. Its compatibility policy is grant-based enrollment by default, with legacy
+shared-bootstrap enrollment available through an explicit opt-in in addition to a configured
+bootstrap token. Already enrolled agents retain their identities. Until redemption is connected,
+the current bootstrap enrollment behavior still applies.
 
 ## HTTP API
 

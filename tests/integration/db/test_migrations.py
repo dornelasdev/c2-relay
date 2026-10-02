@@ -65,11 +65,26 @@ def test_migrations_upgrade_and_downgrade(tmp_path: Path) -> None:
     audit_indexes = {index["name"] for index in inspect(engine).get_indexes("audit_events")}
     assert audit_indexes == {
         "ix_audit_events_agent_occurred",
+        "ix_audit_events_grant_occurred",
         "ix_audit_events_occurred",
         "ix_audit_events_operator_occurred",
         "ix_audit_events_task_occurred",
         "ix_audit_events_type_occurred",
     }
+
+    audit_columns = {
+        column["name"]: column for column in inspect(engine).get_columns("audit_events")
+    }
+    assert audit_columns["agent_id"]["nullable"] is True
+    assert "enrollment_grant_id" in audit_columns
+
+    command.downgrade(config, "20261001_0009")
+    audit_columns = {
+        column["name"]: column for column in inspect(engine).get_columns("audit_events")
+    }
+    assert audit_columns["agent_id"]["nullable"] is False
+    assert "enrollment_grant_id" not in audit_columns
+    assert "enrollment_grants" in inspect(engine).get_table_names()
 
     command.downgrade(config, "20260925_0008")
     assert "enrollment_grants" not in inspect(engine).get_table_names()

@@ -236,6 +236,7 @@ def test_audit_repository_is_append_only_filterable_history(engine: Engine) -> N
             operator_id=None,
             agent_id=None,
             task_id=None,
+            enrollment_grant_id=None,
             limit=1,
             offset=0,
         )
@@ -247,6 +248,7 @@ def test_audit_repository_is_append_only_filterable_history(engine: Engine) -> N
             operator_id=OPERATOR_ID,
             agent_id=AGENT_ID,
             task_id=TASK_ID,
+            enrollment_grant_id=None,
             limit=10,
             offset=0,
         )

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import SecretStr
 
 from c2_relay import __version__
 from c2_relay.api.authentication import RequireOperator, bearer, unauthorized
@@ -23,6 +24,8 @@ from c2_relay.api.schemas import (
     AuditEventListResponse,
     CheckInRequest,
     CheckInResponse,
+    EnrollmentGrantCreateRequest,
+    EnrollmentGrantIssueResponse,
     EnrollmentRequest,
     EnrollmentResponse,
     HealthResponse,
@@ -35,8 +38,11 @@ from c2_relay.core.config import Settings, get_settings
 from c2_relay.core.security import (
     credential_matches,
     digest_credential,
+    digest_enrollment_token,
     digest_idempotency_key,
     generate_credential,
+    generate_enrollment_token,
+    parse_enrollment_token,
     secret_matches,
 )
 from c2_relay.db.session import SessionFactory, create_database_engine, create_session_factory
@@ -51,6 +57,8 @@ from c2_relay.models import (
     AuditEvent,
     AuditEventId,
     AuditEventType,
+    EnrollmentGrant,
+    EnrollmentGrantId,
     Operator,
     OperatorId,
     RegisteredAgent,
@@ -70,9 +78,10 @@ def _audit_event(
     event_type: AuditEventType,
     *,
     occurred_at: datetime,
-    agent_id: AgentId,
+    agent_id: AgentId | None = None,
     operator_id: OperatorId | None = None,
     task_id: TaskId | None = None,
+    enrollment_grant_id: EnrollmentGrantId | None = None,
 ) -> AuditEvent:
     return AuditEvent(
         id=AuditEventId(uuid4()),
@@ -81,6 +90,7 @@ def _audit_event(
         operator_id=operator_id,
         agent_id=agent_id,
         task_id=task_id,
+        enrollment_grant_id=enrollment_grant_id,
     )
 
 
@@ -115,6 +125,7 @@ def _router(
     factory: SessionFactory,
     clock: Callable[[], datetime],
     credential_factory: Callable[[], str],
+    enrollment_token_factory: Callable[[EnrollmentGrantId], SecretStr],
     operator_service: OperatorService,
 ) -> APIRouter:
     router = APIRouter(prefix="/api/v1")
@@ -147,6 +158,7 @@ def _router(
         operator_id: OperatorId | None = None,
         agent_id: AgentId | None = None,
         task_id: TaskId | None = None,
+        enrollment_grant_id: EnrollmentGrantId | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         offset: Annotated[int, Query(ge=0, le=1_000_000)] = 0,
     ) -> AuditEventListResponse:
@@ -157,10 +169,76 @@ def _router(
                 operator_id=operator_id,
                 agent_id=agent_id,
                 task_id=task_id,
+                enrollment_grant_id=enrollment_grant_id,
                 limit=limit,
                 offset=offset,
             )
         return AuditEventListResponse(items=events, total=total, limit=limit, offset=offset)
+
+    @router.post(
+        "/enrollment-grants",
+        response_model=EnrollmentGrantIssueResponse,
+        status_code=HTTPStatus.CREATED,
+    )
+    def issue_enrollment_grant(
+        request: EnrollmentGrantCreateRequest,
+        operator: Annotated[Operator, Depends(require_operator)],
+    ) -> EnrollmentGrantIssueResponse:
+        grant_id = EnrollmentGrantId(uuid4())
+        token = enrollment_token_factory(grant_id)
+        parsed = parse_enrollment_token(token.get_secret_value())
+        if parsed.grant_id != grant_id:
+            raise ValueError("generated token does not match enrollment grant")
+        now = clock()
+        grant = EnrollmentGrant(
+            id=grant_id,
+            issued_by_operator_id=operator.id,
+            created_at=now,
+            expires_at=now + timedelta(seconds=request.expires_in_seconds),
+        )
+        with UnitOfWork(factory) as uow:
+            uow.enrollment_grants.add(
+                grant,
+                digest_enrollment_token(parsed.secret.get_secret_value()),
+            )
+            uow.audit_events.add(
+                _audit_event(
+                    AuditEventType.ENROLLMENT_GRANT_ISSUED,
+                    occurred_at=now,
+                    operator_id=operator.id,
+                    enrollment_grant_id=grant.id,
+                )
+            )
+            uow.commit()
+        return EnrollmentGrantIssueResponse(grant=grant, token=token.get_secret_value())
+
+    @router.post("/enrollment-grants/{grant_id}/revoke", response_model=EnrollmentGrant)
+    def revoke_enrollment_grant(
+        grant_id: EnrollmentGrantId,
+        operator: Annotated[Operator, Depends(require_operator)],
+    ) -> EnrollmentGrant:
+        now = clock()
+        with UnitOfWork(factory) as uow:
+            grant, transitioned = uow.enrollment_grants.revoke_if_pending(
+                grant_id,
+                operator_id=operator.id,
+                now=now,
+            )
+            if grant is None:
+                raise HTTPException(HTTPStatus.NOT_FOUND, "enrollment grant not found")
+            if grant.redeemed_at is not None:
+                raise HTTPException(HTTPStatus.CONFLICT, "enrollment grant was already redeemed")
+            if transitioned:
+                uow.audit_events.add(
+                    _audit_event(
+                        AuditEventType.ENROLLMENT_GRANT_REVOKED,
+                        occurred_at=now,
+                        operator_id=operator.id,
+                        enrollment_grant_id=grant.id,
+                    )
+                )
+            uow.commit()
+        return grant
 
     @router.get("/tasks", response_model=TaskListResponse)
     def list_tasks(
@@ -492,6 +570,7 @@ def create_app(
     *,
     clock: Callable[[], datetime] | None = None,
     credential_factory: Callable[[], str] = generate_credential,
+    enrollment_token_factory: Callable[[EnrollmentGrantId], SecretStr] = generate_enrollment_token,
 ) -> FastAPI:
     resolved_settings = settings or get_settings()
     owned_engine = None
@@ -520,6 +599,7 @@ def create_app(
             session_factory,
             resolved_clock,
             credential_factory,
+            enrollment_token_factory,
             OperatorService(session_factory, clock=resolved_clock),
         )
     )

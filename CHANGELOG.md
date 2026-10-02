@@ -11,8 +11,10 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Added enrollment-grant domain records and migration `20261001_0009`, with issuer attribution,
   expiry, mutually exclusive redemption/revocation records, and unique token-digest storage.
-  Grant issuance and redemption endpoints are not yet connected; existing enrollment behavior
-  remains unchanged in this foundation section.
+- Added authenticated operator endpoints to issue bounded enrollment grants and revoke them
+  idempotently. Tokens are returned once, while only their SHA-256 secret digests are stored.
+- Added filterable audit events for enrollment-grant issuance and revocation through migration
+  `20261002_0010`.
 
 ## [0.2.1] - 2026-09-26
 

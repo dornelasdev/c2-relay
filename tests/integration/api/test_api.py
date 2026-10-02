@@ -12,10 +12,11 @@ from pydantic import SecretStr
 
 from c2_relay.api import create_app
 from c2_relay.core.config import Settings
-from c2_relay.core.security import IdempotencyKeyDigest
+from c2_relay.core.security import IdempotencyKeyDigest, parse_enrollment_token
 from c2_relay.db.repositories import (
     AgentRepository,
     AuditRepository,
+    EnrollmentGrantRepository,
     ResultRepository,
     TaskRepository,
 )
@@ -25,6 +26,8 @@ from c2_relay.models import (
     ActionResult,
     ActionSuccess,
     AgentId,
+    EnrollmentGrant,
+    EnrollmentGrantId,
     HostnameOutput,
     OperatorId,
     Task,
@@ -111,6 +114,16 @@ def operator_headers(credential: str = OPERATOR_CREDENTIAL) -> dict[str, str]:
     return {"Authorization": f"Bearer {credential}"}
 
 
+def issue_grant(client: TestClient, expires_in_seconds: int = 900) -> dict[str, Any]:
+    response = client.post(
+        "/api/v1/enrollment-grants",
+        headers=operator_headers(),
+        json={"expires_in_seconds": expires_in_seconds},
+    )
+    assert response.status_code == 201
+    return cast(dict[str, Any], response.json())
+
+
 def create_task(client: TestClient, agent_id: str, kind: str = "host.hostname") -> dict[str, Any]:
     response = client.post(
         "/api/v1/tasks",
@@ -191,6 +204,151 @@ def test_operator_read_endpoints_reject_agent_credentials(client: TestClient) ->
     for route in routes:
         assert client.get(route).status_code == 401
         assert client.get(route, headers=agent_headers(credential)).status_code == 401
+
+
+def test_operator_issues_a_bounded_one_time_enrollment_token(client: TestClient) -> None:
+    assert client.post("/api/v1/enrollment-grants", json={}).status_code == 401
+    agent_id, credential = enroll(client)
+    assert (
+        client.post(
+            "/api/v1/enrollment-grants",
+            headers=agent_headers(credential),
+            json={},
+        ).status_code
+        == 401
+    )
+    for lifetime in (59, 86_401):
+        assert (
+            client.post(
+                "/api/v1/enrollment-grants",
+                headers=operator_headers(),
+                json={"expires_in_seconds": lifetime},
+            ).status_code
+            == 422
+        )
+
+    payload = issue_grant(client)
+    grant = payload["grant"]
+    parsed = parse_enrollment_token(payload["token"])
+    assert str(parsed.grant_id) == grant["id"]
+    assert grant == {
+        "id": grant["id"],
+        "issued_by_operator_id": str(OPERATOR_UUID),
+        "created_at": NOW.isoformat().replace("+00:00", "Z"),
+        "expires_at": (NOW + timedelta(minutes=15)).isoformat().replace("+00:00", "Z"),
+        "redeemed_at": None,
+        "redeemed_by_agent_id": None,
+        "revoked_at": None,
+        "revoked_by_operator_id": None,
+    }
+    assert payload["token"].startswith(f"c2g.{grant['id']}.")
+    assert payload["token"] not in str(grant)
+    assert agent_id not in str(grant)
+
+    audit = client.get(
+        "/api/v1/audit-events",
+        headers=operator_headers(),
+        params={"enrollment_grant_id": grant["id"]},
+    )
+    assert audit.status_code == 200
+    assert audit.json()["total"] == 1
+    event = audit.json()["items"][0]
+    assert event["event_type"] == "enrollment_grant.issued"
+    assert event["operator_id"] == str(OPERATOR_UUID)
+    assert event["agent_id"] is None
+    assert event["enrollment_grant_id"] == grant["id"]
+    assert payload["token"] not in audit.text
+
+
+def test_grant_issuance_rejects_a_mismatched_generated_token(tmp_path: Path) -> None:
+    engine = create_database_engine(f"sqlite+pysqlite:///{tmp_path / 'grant-token.db'}")
+    Base.metadata.create_all(engine)
+    factory = create_session_factory(engine)
+    OperatorService(
+        factory,
+        clock=lambda: NOW,
+        id_factory=lambda: OPERATOR_UUID,
+        credential_factory=lambda operator_id: SecretStr(OPERATOR_CREDENTIAL),
+    ).provision("API Operator")
+    other_id = EnrollmentGrantId(UUID("50000000-0000-4000-8000-000000000001"))
+    app = create_app(
+        Settings(database_url=str(engine.url)),
+        factory,
+        clock=lambda: NOW,
+        enrollment_token_factory=lambda grant_id: SecretStr(f"c2g.{other_id}.{'x' * 32}"),
+    )
+
+    with (
+        TestClient(app) as mismatched_client,
+        pytest.raises(ValueError, match="generated token does not match enrollment grant"),
+    ):
+        mismatched_client.post(
+            "/api/v1/enrollment-grants",
+            headers=operator_headers(),
+            json={},
+        )
+    engine.dispose()
+
+
+def test_operator_revokes_enrollment_grant_idempotently(
+    client: TestClient,
+    clock: MutableClock,
+) -> None:
+    grant = issue_grant(client)["grant"]
+    route = f"/api/v1/enrollment-grants/{grant['id']}/revoke"
+    assert client.post(route).status_code == 401
+
+    clock.advance(timedelta(minutes=16))
+    first = client.post(route, headers=operator_headers())
+    repeated = client.post(route, headers=operator_headers())
+    assert first.status_code == 200
+    assert repeated.status_code == 200
+    assert repeated.json() == first.json()
+    assert first.json()["revoked_at"] == clock.current.isoformat().replace("+00:00", "Z")
+    assert first.json()["revoked_by_operator_id"] == str(OPERATOR_UUID)
+    assert "token" not in first.text
+
+    audit = client.get(
+        "/api/v1/audit-events",
+        headers=operator_headers(),
+        params={"enrollment_grant_id": grant["id"]},
+    ).json()
+    assert audit["total"] == 2
+    assert [event["event_type"] for event in audit["items"]] == [
+        "enrollment_grant.revoked",
+        "enrollment_grant.issued",
+    ]
+
+
+def test_revoking_missing_or_redeemed_grant_is_rejected(client: TestClient) -> None:
+    missing_id = "00000000-0000-0000-0000-000000000000"
+    missing = client.post(
+        f"/api/v1/enrollment-grants/{missing_id}/revoke",
+        headers=operator_headers(),
+    )
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "enrollment grant not found"}
+
+    grant_id = EnrollmentGrantId(UUID("50000000-0000-4000-8000-000000000001"))
+    redeemed = EnrollmentGrant(
+        id=grant_id,
+        issued_by_operator_id=OperatorId(OPERATOR_UUID),
+        created_at=NOW - timedelta(minutes=1),
+        expires_at=NOW + timedelta(minutes=14),
+        redeemed_at=NOW,
+        redeemed_by_agent_id=AgentId(UUID("20000000-0000-4000-8000-000000000001")),
+    )
+    with patch.object(
+        EnrollmentGrantRepository,
+        "revoke_if_pending",
+        return_value=(redeemed, False),
+    ):
+        response = client.post(
+            f"/api/v1/enrollment-grants/{grant_id}/revoke",
+            headers=operator_headers(),
+        )
+    assert response.status_code == 409
+    assert response.json() == {"detail": "enrollment grant was already redeemed"}
 
 
 def test_operator_can_filter_bounded_non_sensitive_audit_history(

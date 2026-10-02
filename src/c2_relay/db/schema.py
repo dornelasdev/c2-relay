@@ -101,7 +101,9 @@ class AuditEventRow(Base):
         CheckConstraint(
             "event_type IN ("
             "'agent.enrolled','agent.metadata_updated','agent.disabled',"
-            "'task.created','task.claimed','task.cancelled','task.completed','task.failed'"
+            "'task.created','task.claimed','task.cancelled','task.completed','task.failed',"
+            "'enrollment_grant.issued','enrollment_grant.revoked',"
+            "'enrollment_grant.redeemed'"
             ")",
             name="ck_audit_events_type",
         ),
@@ -110,14 +112,16 @@ class AuditEventRow(Base):
         Index("ix_audit_events_operator_occurred", "operator_id", "occurred_at"),
         Index("ix_audit_events_agent_occurred", "agent_id", "occurred_at"),
         Index("ix_audit_events_task_occurred", "task_id", "occurred_at"),
+        Index("ix_audit_events_grant_occurred", "enrollment_grant_id", "occurred_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
     operator_id: Mapped[UUID | None] = mapped_column(Uuid)
-    agent_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    agent_id: Mapped[UUID | None] = mapped_column(Uuid)
     task_id: Mapped[UUID | None] = mapped_column(Uuid)
+    enrollment_grant_id: Mapped[UUID | None] = mapped_column(Uuid)
 
 
 class TaskRow(Base):
