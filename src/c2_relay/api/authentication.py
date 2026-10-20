@@ -9,7 +9,16 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from c2_relay.models import Operator
 from c2_relay.services.operators import OperatorService
 
-bearer = HTTPBearer(auto_error=False)
+operator_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="OperatorBearer",
+    description="Operator credential (c2o.) for inventory, tasks, enrollment grants, and audit.",
+)
+agent_bearer = HTTPBearer(
+    auto_error=False,
+    scheme_name="AgentBearer",
+    description="Agent credential for its own check-ins, task polling, and result submissions.",
+)
 
 
 def unauthorized() -> HTTPException:
@@ -26,7 +35,9 @@ class RequireOperator:
 
     def __call__(
         self,
-        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
+        authorization: Annotated[
+            HTTPAuthorizationCredentials | None, Depends(operator_bearer)
+        ] = None,
     ) -> Operator:
         if authorization is None or authorization.scheme.lower() != "bearer":
             raise unauthorized()

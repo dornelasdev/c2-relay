@@ -112,7 +112,9 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
     engine.dispose()
 
 
-def test_openapi_describes_versioned_routes_and_bearer_authentication(tmp_path: Path) -> None:
+def test_openapi_describes_versioned_routes_and_separate_bearer_authentication(
+    tmp_path: Path,
+) -> None:
     settings = Settings(database_url=f"sqlite+pysqlite:///{tmp_path / 'openapi.db'}")
 
     with TestClient(create_app(settings)) as client:
@@ -120,12 +122,38 @@ def test_openapi_describes_versioned_routes_and_bearer_authentication(tmp_path: 
 
     assert schema["info"]["version"] == "0.2.1"
     assert "/api/v1/agents/{agent_id}/tasks/next" in schema["paths"]
-    assert schema["components"]["securitySchemes"]["HTTPBearer"] == {
-        "type": "http",
-        "scheme": "bearer",
-    }
+    schemes = schema["components"]["securitySchemes"]
+    assert set(schemes) == {"OperatorBearer", "AgentBearer"}
+    for scheme in schemes.values():
+        assert scheme["type"] == "http"
+        assert scheme["scheme"] == "bearer"
+        assert scheme["description"]
+    operator_routes = (
+        ("/api/v1/agents", "get"),
+        ("/api/v1/agents/{agent_id}/disable", "post"),
+        ("/api/v1/tasks", "get"),
+        ("/api/v1/tasks", "post"),
+        ("/api/v1/tasks/{task_id}", "get"),
+        ("/api/v1/tasks/{task_id}/result", "get"),
+        ("/api/v1/tasks/{task_id}/cancel", "post"),
+        ("/api/v1/enrollment-grants", "post"),
+        ("/api/v1/enrollment-grants/{grant_id}/revoke", "post"),
+        ("/api/v1/audit-events", "get"),
+    )
+    agent_routes = (
+        ("/api/v1/agents/{agent_id}/check-ins", "post"),
+        ("/api/v1/agents/{agent_id}/tasks/next", "get"),
+        ("/api/v1/agents/{agent_id}/results", "post"),
+    )
+    public_routes = (("/api/v1/health", "get"), ("/api/v1/agents/enroll", "post"))
+    for path, method in operator_routes:
+        assert schema["paths"][path][method]["security"] == [{"OperatorBearer": []}]
+    for path, method in agent_routes:
+        assert schema["paths"][path][method]["security"] == [{"AgentBearer": []}]
+    for path, method in public_routes:
+        assert not schema["paths"][path][method].get("security")
     task_operation = schema["paths"]["/api/v1/tasks"]["post"]
-    assert task_operation["security"] == [{"HTTPBearer": []}]
+    assert task_operation["security"] == [{"OperatorBearer": []}]
     [idempotency_parameter] = task_operation["parameters"]
     assert idempotency_parameter["name"] == "Idempotency-Key"
     assert idempotency_parameter["in"] == "header"

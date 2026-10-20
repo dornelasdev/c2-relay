@@ -46,7 +46,8 @@ http://127.0.0.1:8000/openapi.json
 
 ## Enroll and run the agent
 
-For a new identity, authorize Swagger UI with the operator credential and call
+For a new identity, open Swagger UI's **Authorize** dialog, enter the operator credential in
+**OperatorBearer**, and call
 `POST /api/v1/enrollment-grants` with `{}` for the default 15-minute lifetime. Save the returned
 `token` as `C2_RELAY_AGENT_ENROLLMENT_TOKEN` in `.env`, then start the agent before it expires.
 The `c2g.` token is shown once and can enroll only one agent. The operator can revoke an unused
@@ -90,7 +91,14 @@ result response.
 On startup, the agent rejects either existing state file if it is a symlink, is not a regular file,
 is owned by another user, or has a mode other than `0600`.
 
-In Swagger UI, select **Authorize** and enter the operator credential. Then use the agent
+Swagger UI has separate **OperatorBearer** and **AgentBearer** authorization fields. The operator
+field accepts the `c2o.` credential; the agent field accepts the credential from `agent-state.json`.
+Both can be authorized at the same time, and each route uses only its declared scheme. Agent
+authorization is useful for manual agent-request PoCs; normal operator work needs only the
+operator field. Enrollment uses its own token header rather than either bearer scheme.
+The generated curl examples contain plaintext credentials, so redact them before sharing.
+
+Use **OperatorBearer** for agent inventory, task management, and audit history. Then use the agent
 identifier displayed in `agent-state.json` to create one task for each allowlisted action:
 
 ```text

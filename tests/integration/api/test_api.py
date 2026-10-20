@@ -211,6 +211,34 @@ def test_operator_read_endpoints_reject_agent_credentials(client: TestClient) ->
         assert client.get(route, headers=agent_headers(credential)).status_code == 401
 
 
+def test_agent_endpoints_reject_operator_credentials(client: TestClient) -> None:
+    agent_id, _ = enroll(client)
+    task = create_task(client, agent_id)
+    check_in = client.post(
+        f"/api/v1/agents/{agent_id}/check-ins",
+        headers=operator_headers(),
+        json=AGENT_METADATA,
+    )
+    poll = client.get(f"/api/v1/agents/{agent_id}/tasks/next", headers=operator_headers())
+    result = client.post(
+        f"/api/v1/agents/{agent_id}/results",
+        headers=operator_headers(),
+        json={
+            "status": "completed",
+            "task_id": task["id"],
+            "agent_id": agent_id,
+            "completed_at": NOW.isoformat(),
+            "output": {"kind": "host.hostname", "hostname": "relay-host"},
+        },
+    )
+
+    for response in (check_in, poll, result):
+        assert response.status_code == 401
+        assert response.json() == {"detail": "invalid credentials"}
+    stored = client.get(f"/api/v1/tasks/{task['id']}", headers=operator_headers())
+    assert stored.json()["status"] == "queued"
+
+
 def test_operator_issues_a_bounded_one_time_enrollment_token(client: TestClient) -> None:
     assert client.post("/api/v1/enrollment-grants", json={}).status_code == 401
     agent_id, credential = enroll(client)

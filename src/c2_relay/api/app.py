@@ -12,7 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import SecretStr
 
 from c2_relay import __version__
-from c2_relay.api.authentication import RequireOperator, bearer, unauthorized
+from c2_relay.api.authentication import RequireOperator, agent_bearer, unauthorized
 from c2_relay.api.middleware import (
     AuthenticationFailureLimitMiddleware,
     RequestSizeLimitMiddleware,
@@ -375,7 +375,7 @@ def _router(
     def check_in(
         agent_id: AgentId,
         request: CheckInRequest,
-        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
+        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(agent_bearer)] = None,
     ) -> CheckInResponse:
         _require_agent(factory, agent_id, authorization)
         now = clock()
@@ -495,7 +495,7 @@ def _router(
     @router.get("/agents/{agent_id}/tasks/next", response_model=TaskResponse)
     def next_task(
         agent_id: AgentId,
-        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
+        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(agent_bearer)] = None,
     ) -> TaskResponse:
         _require_agent(factory, agent_id, authorization)
         now = clock()
@@ -524,7 +524,7 @@ def _router(
     def submit_result(
         agent_id: AgentId,
         submission: ActionResultSubmission,
-        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)] = None,
+        authorization: Annotated[HTTPAuthorizationCredentials | None, Depends(agent_bearer)] = None,
     ) -> ActionResult:
         _require_agent(factory, agent_id, authorization)
         result: ActionResult

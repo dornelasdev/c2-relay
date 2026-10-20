@@ -118,6 +118,12 @@ recover the credential. The operator must disable the orphaned agent and issue a
 FastAPI exposes versioned routes under `/api/v1`. The transport layer validates requests and
 delegates persistence to a unit of work; it does not redefine domain lifecycle rules.
 
+OpenAPI declares separate `OperatorBearer` and `AgentBearer` security schemes. Swagger UI can
+hold both authorizations simultaneously and selects the scheme declared by each operation.
+Both still use the standard `Authorization: Bearer` header on the wire; server-side identity
+and credential checks enforce access. Enrollment uses its dedicated token header, and health
+requires no credentials.
+
 - Health is public and carries no operational data.
 - Enrollment requires a valid single-use grant token. Legacy bootstrap attempts receive `503`
   unless explicitly enabled with a configured token. Task creation requires an active operator's

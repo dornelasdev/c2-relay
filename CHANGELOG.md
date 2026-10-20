@@ -19,6 +19,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   events, expiry/revocation checks, and rollback of agent creation after failed redemption.
 - Added agent configuration for one-time enrollment tokens. Existing identities continue to
   work without enrollment credentials.
+- Added separate operator and agent bearer schemes in OpenAPI and Swagger UI so manual
+  workflows can keep both credentials authorized without repeatedly switching the shared field.
 
 ### Changed
 
