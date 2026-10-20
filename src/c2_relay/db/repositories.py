@@ -209,6 +209,31 @@ class EnrollmentGrantRepository:
         row = self._session.get(EnrollmentGrantRow, grant_id)
         return None if row is None else self._to_domain(row)
 
+    def token_digest_for(self, grant_id: EnrollmentGrantId) -> EnrollmentTokenDigest | None:
+        row = self._session.get(EnrollmentGrantRow, grant_id)
+        return None if row is None else EnrollmentTokenDigest(row.token_digest)
+
+    def redeem_if_pending(
+        self,
+        grant_id: EnrollmentGrantId,
+        *,
+        agent_id: AgentId,
+        now: datetime,
+    ) -> bool:
+        redeemed_id = self._session.scalar(
+            update(EnrollmentGrantRow)
+            .where(
+                EnrollmentGrantRow.id == grant_id,
+                EnrollmentGrantRow.redeemed_at.is_(None),
+                EnrollmentGrantRow.revoked_at.is_(None),
+                EnrollmentGrantRow.created_at <= now,
+                EnrollmentGrantRow.expires_at > now,
+            )
+            .values(redeemed_at=now, redeemed_by_agent_id=agent_id)
+            .returning(EnrollmentGrantRow.id)
+        )
+        return redeemed_id is not None
+
     def revoke_if_pending(
         self,
         grant_id: EnrollmentGrantId,

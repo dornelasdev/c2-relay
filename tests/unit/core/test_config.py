@@ -16,6 +16,8 @@ def test_settings_have_local_development_defaults(
     assert settings.database_url == "sqlite+pysqlite:///./c2-relay.db"
     assert settings.log_level == "INFO"
     assert settings.bootstrap_token is None
+    assert settings.agent_enrollment_token is None
+    assert settings.allow_legacy_bootstrap_enrollment is False
     assert settings.server_host == "127.0.0.1"
     assert settings.server_port == 8000
     assert settings.task_lease_seconds == 30.0
@@ -34,6 +36,8 @@ def test_settings_read_prefixed_environment(
     monkeypatch.setenv("C2_RELAY_LOG_LEVEL", "DEBUG")
     monkeypatch.setenv("C2_RELAY_AUTH_FAILURE_LIMIT", "5")
     monkeypatch.setenv("C2_RELAY_AUTH_FAILURE_WINDOW_SECONDS", "30")
+    monkeypatch.setenv("C2_RELAY_AGENT_ENROLLMENT_TOKEN", "g" * 32)
+    monkeypatch.setenv("C2_RELAY_ALLOW_LEGACY_BOOTSTRAP_ENROLLMENT", "true")
 
     settings = Settings()
 
@@ -42,6 +46,8 @@ def test_settings_read_prefixed_environment(
     assert settings.log_level == "DEBUG"
     assert settings.auth_failure_limit == 5
     assert settings.auth_failure_window_seconds == 30.0
+    assert settings.agent_enrollment_token == SecretStr("g" * 32)
+    assert settings.allow_legacy_bootstrap_enrollment is True
 
 
 def test_blank_bootstrap_token_in_env_file_disables_enrollment(
@@ -65,6 +71,8 @@ def test_blank_environment_token_overrides_env_file(
 
 def test_direct_blank_secret_disables_enrollment() -> None:
     assert Settings(bootstrap_token=SecretStr("")).bootstrap_token is None
+    assert Settings(agent_enrollment_token=SecretStr("")).agent_enrollment_token is None
+    assert Settings.model_validate({"agent_enrollment_token": ""}).agent_enrollment_token is None
 
 
 def test_nonblank_bootstrap_token_still_requires_minimum_length() -> None:

@@ -15,6 +15,16 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   idempotently. Tokens are returned once, while only their SHA-256 secret digests are stored.
 - Added filterable audit events for enrollment-grant issuance and revocation through migration
   `20261002_0010`.
+- Added atomic single-use grant redemption during agent enrollment, including redemption audit
+  events, expiry/revocation checks, and rollback of agent creation after failed redemption.
+- Added agent configuration for one-time enrollment tokens. Existing identities continue to
+  work without enrollment credentials.
+
+### Changed
+
+- Agent enrollment now requires a grant by default. Legacy shared-bootstrap enrollment requires
+  explicit opt-in through `C2_RELAY_ALLOW_LEGACY_BOOTSTRAP_ENROLLMENT` and a configured bootstrap
+  token. Invalid or conflicting enrollment headers do not fall back to another credential.
 
 ## [0.2.1] - 2026-09-26
 

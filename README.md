@@ -36,8 +36,7 @@ uv run alembic upgrade head
 uv run c2-relay-server
 ```
 
-The server binds to `127.0.0.1:8000` by default. Copy `.env.example` to `.env` and configure a
-high-entropy `C2_RELAY_BOOTSTRAP_TOKEN` to enable agent enrollment. Provision an operator with
+The server binds to `127.0.0.1:8000` by default. Copy `.env.example` to `.env`. Provision an operator with
 `uv run c2-relay-operator create --name "Local Operator"`; its one-time credential authorizes
 agent and task management plus bounded audit-history inspection. The API must be placed behind
 TLS before use across a network.
@@ -47,7 +46,13 @@ same request without queuing duplicate work. See the local runbook for the expec
 Repeated authentication failures from one direct peer are temporarily rate limited and recorded
 without credential material in the server's security log.
 
-Start an enrolled or bootstrap-configured agent in a separate terminal:
+For a new agent, use the operator-authenticated `POST /api/v1/enrollment-grants` endpoint and set
+`C2_RELAY_AGENT_ENROLLMENT_TOKEN` in `.env` to the returned `c2g.` token. It expires after 15
+minutes by default and can enroll only one agent. Existing agents reuse their saved identity.
+Legacy bootstrap enrollment requires `C2_RELAY_ALLOW_LEGACY_BOOTSTRAP_ENROLLMENT=true` and a
+configured bootstrap token; it is disabled by default.
+
+Start the agent in a separate terminal:
 
 ```bash
 uv run c2-relay-agent

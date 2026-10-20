@@ -96,7 +96,7 @@ def _audit_event(
 
 def _require_bootstrap(settings: Settings, provided: str | None) -> None:
     configured = settings.bootstrap_token
-    if configured is None:
+    if not settings.allow_legacy_bootstrap_enrollment or configured is None:
         raise HTTPException(HTTPStatus.SERVICE_UNAVAILABLE, "bootstrap operations are disabled")
     if provided is None or not secret_matches(provided, configured.get_secret_value()):
         raise unauthorized()
@@ -313,19 +313,54 @@ def _router(
     @router.post("/agents/enroll", response_model=EnrollmentResponse, status_code=201)
     def enroll(
         request: EnrollmentRequest,
+        enrollment_token: str | None = Header(default=None, alias="X-Enrollment-Token"),
         bootstrap_token: str | None = Header(default=None, alias="X-Bootstrap-Token"),
     ) -> EnrollmentResponse:
-        _require_bootstrap(settings, bootstrap_token)
+        if enrollment_token is not None and bootstrap_token is not None:
+            raise unauthorized()
+        parsed = None
+        if enrollment_token is not None:
+            try:
+                parsed = parse_enrollment_token(enrollment_token)
+            except ValueError:
+                raise unauthorized() from None
+        elif bootstrap_token is not None:
+            _require_bootstrap(settings, bootstrap_token)
+        else:
+            raise unauthorized()
         agent_id = AgentId(uuid4())
         credential = credential_factory()
         now = clock()
         with UnitOfWork(factory) as uow:
+            if parsed is not None:
+                expected = uow.enrollment_grants.token_digest_for(parsed.grant_id)
+                matches = secret_matches(
+                    digest_enrollment_token(parsed.secret.get_secret_value()),
+                    expected or "0" * 64,
+                )
+                if expected is None or not matches:
+                    raise unauthorized()
             uow.agents.add(
                 agent_id,
                 request,
                 digest_credential(credential),
                 now=now,
             )
+            if parsed is not None:
+                # Recheck expiry after the insert has acquired SQLite's write lock.
+                redeemed_at = clock()
+                if not uow.enrollment_grants.redeem_if_pending(
+                    parsed.grant_id, agent_id=agent_id, now=redeemed_at
+                ):
+                    raise unauthorized()
+                uow.audit_events.add(
+                    _audit_event(
+                        AuditEventType.ENROLLMENT_GRANT_REDEEMED,
+                        occurred_at=redeemed_at,
+                        agent_id=agent_id,
+                        enrollment_grant_id=parsed.grant_id,
+                    )
+                )
             uow.audit_events.add(
                 _audit_event(
                     AuditEventType.AGENT_ENROLLED,

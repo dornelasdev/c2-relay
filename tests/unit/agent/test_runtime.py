@@ -72,6 +72,7 @@ def runtime(
         result_store,
         ActionRegistry(),
         bootstrap_token=SecretStr("bootstrap"),
+        enrollment_token=SecretStr("grant-token"),
         poll_interval=1,
         max_backoff=2,
         metadata_factory=lambda: METADATA,
@@ -190,7 +191,7 @@ def test_runtime_enrolls_saves_and_closes() -> None:
 
     runtime(client, store).run(stop)
 
-    client.enroll.assert_called_once()
+    client.enroll.assert_called_once_with(METADATA, SecretStr("grant-token"))
     store.save.assert_called_once()
     client.close.assert_called_once()
 
@@ -274,7 +275,10 @@ def test_runtime_backs_off_after_retryable_server_status() -> None:
     client.close.assert_called_once()
 
 
-def test_runtime_requires_bootstrap_token_for_first_enrollment() -> None:
+@pytest.mark.parametrize("token", [None, SecretStr("bootstrap")])
+def test_runtime_requires_grant_unless_legacy_is_explicitly_enabled(
+    token: SecretStr | None,
+) -> None:
     client = MagicMock(spec=RelayClient)
     store = MagicMock(spec=IdentityStore)
     store.load.return_value = None
@@ -283,12 +287,92 @@ def test_runtime_requires_bootstrap_token_for_first_enrollment() -> None:
         store,
         MagicMock(spec=PendingResultStore),
         ActionRegistry(),
-        bootstrap_token=None,
+        bootstrap_token=token,
         poll_interval=1,
         max_backoff=2,
     )
 
-    with pytest.raises(RuntimeError, match="no bootstrap token"):
+    with pytest.raises(RuntimeError, match="configure an enrollment grant token"):
         value.run(Event())
 
+    client.enroll.assert_not_called()
+    client.close.assert_called_once()
+
+
+def test_runtime_can_explicitly_use_legacy_bootstrap() -> None:
+    client = MagicMock(spec=RelayClient)
+    client.enroll.return_value = EnrollmentResponse(agent_id=AGENT_ID, credential="x" * 32)
+    client.next_task.return_value = None
+    store = MagicMock(spec=IdentityStore)
+    store.load.return_value = None
+    stop = MagicMock(spec=Event)
+    stop.is_set.side_effect = [False, True]
+    value = AgentRuntime(
+        client,
+        store,
+        MagicMock(spec=PendingResultStore, load=lambda: None),
+        ActionRegistry(),
+        bootstrap_token=SecretStr("bootstrap"),
+        allow_legacy_bootstrap_enrollment=True,
+        poll_interval=1,
+        max_backoff=2,
+        metadata_factory=lambda: METADATA,
+    )
+
+    value.run(stop)
+
+    client.enroll.assert_called_once_with(
+        METADATA, SecretStr("bootstrap"), use_legacy_bootstrap=True
+    )
+    store.save.assert_called_once()
+
+
+def test_runtime_reuses_saved_identity_without_enrollment_tokens() -> None:
+    client = MagicMock(spec=RelayClient)
+    client.next_task.return_value = None
+    store = MagicMock(spec=IdentityStore)
+    store.load.return_value = IDENTITY
+    stop = MagicMock(spec=Event)
+    stop.is_set.side_effect = [False, True]
+    value = AgentRuntime(
+        client,
+        store,
+        MagicMock(spec=PendingResultStore, load=lambda: None),
+        ActionRegistry(),
+        poll_interval=1,
+        max_backoff=2,
+    )
+
+    value.run(stop)
+
+    client.enroll.assert_not_called()
+    client.check_in.assert_called_once()
+
+
+def test_runtime_does_not_fall_back_after_rejected_grant() -> None:
+    client = MagicMock(spec=RelayClient)
+    request = httpx2.Request("POST", "http://relay.test/api/v1/agents/enroll")
+    client.enroll.side_effect = httpx2.HTTPStatusError(
+        "grant rejected", request=request, response=httpx2.Response(401, request=request)
+    )
+    store = MagicMock(spec=IdentityStore)
+    store.load.return_value = None
+    value = AgentRuntime(
+        client,
+        store,
+        MagicMock(spec=PendingResultStore),
+        ActionRegistry(),
+        enrollment_token=SecretStr("grant-token"),
+        bootstrap_token=SecretStr("bootstrap"),
+        allow_legacy_bootstrap_enrollment=True,
+        poll_interval=1,
+        max_backoff=2,
+        metadata_factory=lambda: METADATA,
+    )
+
+    value.run(Event())
+
+    client.enroll.assert_called_once_with(METADATA, SecretStr("grant-token"))
+    store.save.assert_not_called()
+    client.check_in.assert_not_called()
     client.close.assert_called_once()

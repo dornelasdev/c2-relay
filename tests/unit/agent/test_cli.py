@@ -11,11 +11,13 @@ def test_agent_cli_wires_runtime_and_signal_handlers() -> None:
     with (
         patch("c2_relay.agent.cli.get_settings", return_value=settings),
         patch("c2_relay.agent.cli.signal.signal") as register_signal,
-        patch("c2_relay.agent.cli.AgentRuntime", return_value=runtime),
+        patch("c2_relay.agent.cli.AgentRuntime", return_value=runtime) as runtime_factory,
     ):
         main()
 
     assert register_signal.call_count == 2
+    assert runtime_factory.call_args.kwargs["enrollment_token"] == settings.agent_enrollment_token
+    assert runtime_factory.call_args.kwargs["allow_legacy_bootstrap_enrollment"] is False
     runtime.run.assert_called_once()
     handler = register_signal.call_args.args[1]
     handler(2, None)

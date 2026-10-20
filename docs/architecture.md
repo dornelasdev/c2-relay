@@ -76,7 +76,7 @@ Agent credential material is never accepted by persistence repositories. They ac
 fixed-length SHA-256 digest produced from a high-entropy token. Credential generation and HTTP
 authentication are owned by the API layer.
 
-## Enrollment grants (v0.3 foundation)
+## Enrollment grants
 
 `EnrollmentGrant` is a non-secret record containing its issuing operator, creation and expiry
 times, and an optional redemption or revocation outcome. Redemption records the enrolled agent;
@@ -96,11 +96,22 @@ its secret. Revocation is an idempotent transition, remains available after expi
 the responsible operator. Issuance and the first successful revocation each create a filterable
 audit event without storing token material.
 
-Atomic single-use redemption with agent creation will be connected in the next implementation
-slice. Its compatibility policy is grant-based enrollment by default, with legacy
-shared-bootstrap enrollment available through an explicit opt-in in addition to a configured
-bootstrap token. Already enrolled agents retain their identities. Until redemption is connected,
-the current bootstrap enrollment behavior still applies.
+Agents present the token through `X-Enrollment-Token` at `POST /api/v1/agents/enroll`. Its secret
+digest is compared in constant time, and a conditional database update consumes only an unused,
+unrevoked grant within its lifetime. Agent creation, redemption, and both audit events commit in
+one transaction. Failed redemption rolls back the new agent, including when another request
+has already redeemed or revoked the grant. Expiry is checked again after acquiring SQLite's
+write lock. Rejected grants receive the same `401` response without disclosing their state.
+
+Grant-based enrollment is the default. Legacy shared-bootstrap enrollment requires
+`C2_RELAY_ALLOW_LEGACY_BOOTSTRAP_ENROLLMENT=true` and a configured bootstrap token on the server;
+the agent also requires the explicit opt-in to use that fallback. Supplying both enrollment
+headers is rejected. A supplied grant never falls back to bootstrap authentication after failure.
+Already enrolled agents retain their identities and need neither enrollment token at startup.
+
+Redemption is intentionally single use, including retries after a successful commit. If the
+enrollment response is lost or the agent cannot save its identity, the consumed grant cannot
+recover the credential. The operator must disable the orphaned agent and issue a new grant.
 
 ## HTTP API
 
@@ -108,8 +119,9 @@ FastAPI exposes versioned routes under `/api/v1`. The transport layer validates 
 delegates persistence to a unit of work; it does not redefine domain lifecycle rules.
 
 - Health is public and carries no operational data.
-- Enrollment requires the configured bootstrap token and returns `503` when no token is
-  configured. Task creation requires an active operator's bearer credential.
+- Enrollment requires a valid single-use grant token. Legacy bootstrap attempts receive `503`
+  unless explicitly enabled with a configured token. Task creation requires an active operator's
+  bearer credential.
 - Enrollment issues a high-entropy agent credential once and persists only its SHA-256 digest.
 - Operator provisioning also displays its credential once and persists only the secret digest.
 - Task creation accepts an optional 16-to-128-character `Idempotency-Key`. Repeating the same

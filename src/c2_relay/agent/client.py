@@ -24,10 +24,17 @@ class RelayClient:
         if self._owns_client:
             self._client.close()
 
-    def enroll(self, metadata: AgentMetadata, bootstrap_token: SecretStr) -> EnrollmentResponse:
+    def enroll(
+        self,
+        metadata: AgentMetadata,
+        token: SecretStr,
+        *,
+        use_legacy_bootstrap: bool = False,
+    ) -> EnrollmentResponse:
+        header = "X-Bootstrap-Token" if use_legacy_bootstrap else "X-Enrollment-Token"
         response = self._client.post(
             "/api/v1/agents/enroll",
-            headers={"X-Bootstrap-Token": bootstrap_token.get_secret_value()},
+            headers={header: token.get_secret_value()},
             json=metadata.model_dump(mode="json"),
         )
         response.raise_for_status()

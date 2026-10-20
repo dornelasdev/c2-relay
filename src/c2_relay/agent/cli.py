@@ -26,7 +26,9 @@ def main() -> None:
         IdentityStore(settings.agent_state_path),
         PendingResultStore(settings.agent_result_path),
         ActionRegistry(),
+        enrollment_token=settings.agent_enrollment_token,
         bootstrap_token=settings.bootstrap_token,
+        allow_legacy_bootstrap_enrollment=settings.allow_legacy_bootstrap_enrollment,
         poll_interval=settings.agent_poll_interval,
         max_backoff=settings.agent_max_backoff,
     )

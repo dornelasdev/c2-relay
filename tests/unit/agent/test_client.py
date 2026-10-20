@@ -49,7 +49,7 @@ def test_relay_client_workflow_and_headers() -> None:
     metadata = AgentMetadata(
         hostname="host", operating_system="Linux", username="user", agent_version="0.1.0"
     )
-    enrollment = client.enroll(metadata, SecretStr("bootstrap"))
+    enrollment = client.enroll(metadata, SecretStr("grant-token"))
     credential = SecretStr(enrollment.credential)
     client.check_in(AGENT_ID, credential, metadata)
     assert client.next_task(AGENT_ID, credential) is None
@@ -65,7 +65,8 @@ def test_relay_client_workflow_and_headers() -> None:
     )
     client.close()
 
-    assert requests[0].headers["x-bootstrap-token"] == "bootstrap"
+    assert requests[0].headers["x-enrollment-token"] == "grant-token"
+    assert "x-bootstrap-token" not in requests[0].headers
     assert all(request.headers["authorization"].startswith("Bearer ") for request in requests[1:])
     assert requests[1].read() == requests[0].read()
 
@@ -73,3 +74,22 @@ def test_relay_client_workflow_and_headers() -> None:
 def test_relay_client_closes_an_owned_http_client() -> None:
     client = RelayClient("http://relay.test", timeout=1)
     client.close()
+
+
+def test_relay_client_legacy_enrollment_uses_only_bootstrap_header() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        assert request.headers["x-bootstrap-token"] == "bootstrap"
+        assert "x-enrollment-token" not in request.headers
+        return httpx2.Response(201, json={"agent_id": str(AGENT_ID), "credential": "x" * 32})
+
+    with httpx2.Client(
+        base_url="http://relay.test", transport=httpx2.MockTransport(handler)
+    ) as http:
+        client = RelayClient("http://ignored", timeout=1, client=http)
+        client.enroll(
+            AgentMetadata(
+                hostname="host", operating_system="Linux", username="user", agent_version="0.2.1"
+            ),
+            SecretStr("bootstrap"),
+            use_legacy_bootstrap=True,
+        )

@@ -22,8 +22,6 @@ from c2_relay.models import AgentMetadata, TaskId, TaskStatus
 from c2_relay.services.operators import OperatorService
 
 NOW = datetime(2026, 1, 2, 12, tzinfo=UTC)
-BOOTSTRAP_TOKEN = "b" * 32
-AGENT_CREDENTIAL = "agent-credential-" + "x" * 32
 OPERATOR_UUID = UUID("30000000-0000-4000-8000-000000000001")
 OPERATOR_CREDENTIAL = f"c2o.{OPERATOR_UUID}.{'o' * 32}"
 
@@ -42,23 +40,28 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
         id_factory=lambda: OPERATOR_UUID,
         credential_factory=lambda operator_id: SecretStr(OPERATOR_CREDENTIAL),
     ).provision("Workflow Operator")
-    settings = Settings(database_url=database_url, bootstrap_token=SecretStr(BOOTSTRAP_TOKEN))
+    settings = Settings(database_url=database_url, bootstrap_token=None)
     app = create_app(
         settings,
         factory,
         clock=lambda: NOW,
-        credential_factory=lambda: AGENT_CREDENTIAL,
     )
     identity_store = IdentityStore(tmp_path / "agent-state.json")
 
     with TestClient(app) as operator_client:
+        grant_response = operator_client.post(
+            "/api/v1/enrollment-grants",
+            headers={"Authorization": f"Bearer {OPERATOR_CREDENTIAL}"},
+            json={},
+        )
+        assert grant_response.status_code == 201
         relay_client = RelayClient("http://testserver", timeout=1, client=operator_client)
         runtime = AgentRuntime(
             relay_client,
             identity_store,
             PendingResultStore(tmp_path / "pending-result.json"),
             ActionRegistry(),
-            bootstrap_token=SecretStr(BOOTSTRAP_TOKEN),
+            enrollment_token=SecretStr(grant_response.json()["token"]),
             poll_interval=1,
             max_backoff=2,
             metadata_factory=lambda: AgentMetadata(
@@ -75,6 +78,17 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
         runtime.run(stopped)
         identity = identity_store.load()
         assert identity is not None
+        replay = operator_client.post(
+            "/api/v1/agents/enroll",
+            headers={"X-Enrollment-Token": grant_response.json()["token"]},
+            json={
+                "hostname": "second-host",
+                "operating_system": "Linux",
+                "username": "operator",
+                "agent_version": "0.2.1",
+            },
+        )
+        assert replay.status_code == 401
 
         task_response = operator_client.post(
             "/api/v1/tasks",

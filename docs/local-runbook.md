@@ -1,11 +1,11 @@
 # Local verification runbook
 
-This runbook verifies the assembled `0.2.1` workflow on an authorized local machine.
+This runbook verifies the current development workflow on an authorized local machine.
 
 ## Prepare
 
-Create `.env` from `.env.example` and set `C2_RELAY_BOOTSTRAP_TOKEN` to a unique value containing
-at least 32 characters. Keep the default localhost server and SQLite database settings.
+Create `.env` from `.env.example`. Keep the default localhost server and SQLite database
+settings. Leave legacy bootstrap enrollment disabled; new agents use one-time enrollment grants.
 
 Install dependencies and create the database schema:
 
@@ -46,6 +46,16 @@ http://127.0.0.1:8000/openapi.json
 
 ## Enroll and run the agent
 
+For a new identity, authorize Swagger UI with the operator credential and call
+`POST /api/v1/enrollment-grants` with `{}` for the default 15-minute lifetime. Save the returned
+`token` as `C2_RELAY_AGENT_ENROLLMENT_TOKEN` in `.env`, then start the agent before it expires.
+The `c2g.` token is shown once and can enroll only one agent. The operator can revoke an unused
+grant with `POST /api/v1/enrollment-grants/{grant_id}/revoke`.
+
+An existing `agent-state.json` is reused without a grant. Do not remove a working identity just
+to repeat enrollment. Once the new agent has saved its identity, clear the consumed enrollment
+token from `.env`.
+
 In a second terminal:
 
 ```bash
@@ -58,6 +68,17 @@ owner-only:
 ```bash
 stat -f '%Sp' agent-state.json 2>/dev/null || stat -c '%A' agent-state.json
 ```
+
+Use the operator-authenticated audit endpoint to confirm one `enrollment_grant.redeemed` event
+for the grant and one `agent.enrolled` event for the new agent. Invalid, expired, revoked, or
+already consumed grant tokens receive `401`; they do not create additional agents. If the
+enrollment response is lost or identity saving fails after server commit, disable the orphaned
+agent and issue a new grant rather than retrying the consumed token.
+
+For temporary compatibility with old shared-token enrollment, both server and agent must use
+`C2_RELAY_ALLOW_LEGACY_BOOTSTRAP_ENROLLMENT=true` and a high-entropy `C2_RELAY_BOOTSTRAP_TOKEN`
+containing at least 32 characters. Leave the agent grant token blank when using that flow.
+Prefer a separate one-time grant for each new agent.
 
 Each authenticated check-in refreshes the hostname, operating system, username, agent version,
 and architecture shown to operators. `last_seen_at` always comes from the server clock. These host

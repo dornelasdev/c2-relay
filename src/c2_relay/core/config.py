@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite+pysqlite:///./c2-relay.db", min_length=1)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     bootstrap_token: SecretStr | None = Field(default=None, min_length=32)
+    allow_legacy_bootstrap_enrollment: bool = False
+    agent_enrollment_token: SecretStr | None = Field(default=None, min_length=32)
     server_host: str = "127.0.0.1"
     server_port: int = Field(default=8000, ge=1, le=65535)
     task_lease_seconds: float = Field(default=30.0, gt=0, le=3600)
@@ -40,11 +42,9 @@ class Settings(BaseSettings):
     agent_request_timeout: float = Field(default=10.0, gt=0, le=300)
     agent_max_backoff: float = Field(default=60.0, gt=0, le=3600)
 
-    @field_validator("bootstrap_token", mode="before")
+    @field_validator("bootstrap_token", "agent_enrollment_token", mode="before")
     @classmethod
-    def blank_bootstrap_token_disables_enrollment(
-        cls, value: SecretStr | str | None
-    ) -> SecretStr | str | None:
+    def blank_token_is_unconfigured(cls, value: SecretStr | str | None) -> SecretStr | str | None:
         if value == "" or (isinstance(value, SecretStr) and not value.get_secret_value()):
             return None
         return value

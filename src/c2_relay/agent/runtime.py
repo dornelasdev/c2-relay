@@ -25,7 +25,9 @@ class AgentRuntime:
         result_store: PendingResultStore,
         actions: ActionRegistry,
         *,
-        bootstrap_token: SecretStr | None,
+        enrollment_token: SecretStr | None = None,
+        bootstrap_token: SecretStr | None = None,
+        allow_legacy_bootstrap_enrollment: bool = False,
         poll_interval: float,
         max_backoff: float,
         metadata_factory: Callable[[], AgentMetadata] = collect_metadata,
@@ -37,6 +39,8 @@ class AgentRuntime:
         self._result_store = result_store
         self._actions = actions
         self._bootstrap_token = bootstrap_token
+        self._enrollment_token = enrollment_token
+        self._allow_legacy_bootstrap_enrollment = allow_legacy_bootstrap_enrollment
         self._poll_interval = poll_interval
         self._max_backoff = max_backoff
         self._metadata_factory = metadata_factory
@@ -110,10 +114,15 @@ class AgentRuntime:
         identity = self._identity_store.load()
         if identity is not None:
             return identity
-        if self._bootstrap_token is None:
-            msg = "agent is not enrolled and no bootstrap token is configured"
+        if self._enrollment_token is not None:
+            enrollment = self._client.enroll(self._metadata_factory(), self._enrollment_token)
+        elif self._allow_legacy_bootstrap_enrollment and self._bootstrap_token is not None:
+            enrollment = self._client.enroll(
+                self._metadata_factory(), self._bootstrap_token, use_legacy_bootstrap=True
+            )
+        else:
+            msg = "agent is not enrolled; configure an enrollment grant token"
             raise RuntimeError(msg)
-        enrollment = self._client.enroll(self._metadata_factory(), self._bootstrap_token)
         identity = AgentIdentity(
             agent_id=enrollment.agent_id,
             credential=SecretStr(enrollment.credential),

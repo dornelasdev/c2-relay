@@ -1,7 +1,9 @@
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from pathlib import Path
+from threading import Barrier
 from typing import Any, cast
 from unittest.mock import patch
 from uuid import UUID
@@ -65,7 +67,9 @@ def clock() -> MutableClock:
 
 
 @pytest.fixture
-def client(tmp_path: Path, clock: MutableClock) -> Iterator[TestClient]:
+def client(
+    tmp_path: Path, clock: MutableClock, request: pytest.FixtureRequest
+) -> Iterator[TestClient]:
     engine = create_database_engine(f"sqlite+pysqlite:///{tmp_path / 'api.db'}")
     Base.metadata.create_all(engine)
     factory = create_session_factory(engine)
@@ -78,6 +82,7 @@ def client(tmp_path: Path, clock: MutableClock) -> Iterator[TestClient]:
     settings = Settings(
         database_url=str(engine.url),
         bootstrap_token=SecretStr(BOOTSTRAP_TOKEN),
+        allow_legacy_bootstrap_enrollment=getattr(request, "param", True),
     )
     credential_sequence = count(1)
     app = create_app(
@@ -647,13 +652,261 @@ def test_enrollment_requires_the_configured_bootstrap_token(client: TestClient) 
         assert response.headers["www-authenticate"] == "Bearer"
 
 
-def test_bootstrap_operations_can_be_disabled(tmp_path: Path) -> None:
+@pytest.mark.parametrize("client", [False], indirect=True)
+def test_grant_enrollment_is_default_single_use_and_audited(client: TestClient) -> None:
+    payload = issue_grant(client)
+    token = payload["token"]
+    grant_id = payload["grant"]["id"]
+    headers = {"X-Enrollment-Token": token}
+    response = client.post("/api/v1/agents/enroll", headers=headers, json=AGENT_METADATA)
+    assert response.status_code == 201
+    agent_id = response.json()["agent_id"]
+    credential = response.json()["credential"]
+    assert (
+        client.post("/api/v1/agents/enroll", headers=headers, json=AGENT_METADATA).status_code
+        == 401
+    )
+    assert (
+        client.get(
+            f"/api/v1/agents/{agent_id}/tasks/next", headers=agent_headers(credential)
+        ).status_code
+        == 200
+    )
+    inventory = client.get("/api/v1/agents", headers=operator_headers())
+    assert inventory.json()["total"] == 1
+    assert token not in inventory.text
+    audit = client.get(
+        "/api/v1/audit-events",
+        headers=operator_headers(),
+        params={"enrollment_grant_id": grant_id},
+    )
+    assert audit.json()["total"] == 2
+    redeemed = next(
+        event
+        for event in audit.json()["items"]
+        if event["event_type"] == "enrollment_grant.redeemed"
+    )
+    assert redeemed["agent_id"] == agent_id
+    assert redeemed["operator_id"] is None
+    assert token not in audit.text
+    enrolled_events = client.get(
+        "/api/v1/audit-events",
+        headers=operator_headers(),
+        params={"event_type": "agent.enrolled", "agent_id": agent_id},
+    )
+    assert enrolled_events.json()["total"] == 1
+    assert (
+        client.post(
+            f"/api/v1/enrollment-grants/{grant_id}/revoke", headers=operator_headers()
+        ).status_code
+        == 409
+    )
+
+
+@pytest.mark.parametrize(
+    "case", ["malformed", "unknown", "wrong-secret", "revoked", "expired", "future", "both"]
+)
+def test_invalid_grants_do_not_create_agents_or_redemption_events(
+    client: TestClient, clock: MutableClock, case: str
+) -> None:
+    payload = issue_grant(client)
+    token = payload["token"]
+    grant_id = payload["grant"]["id"]
+    if case == "malformed":
+        token = "malformed-grant-token"
+    elif case == "unknown":
+        token = f"c2g.{UUID(int=0)}.{'x' * 32}"
+    elif case == "wrong-secret":
+        token = f"c2g.{grant_id}.{'x' * 32}"
+    elif case == "revoked":
+        assert (
+            client.post(
+                f"/api/v1/enrollment-grants/{grant_id}/revoke", headers=operator_headers()
+            ).status_code
+            == 200
+        )
+    elif case == "expired":
+        clock.advance(timedelta(seconds=900))
+    elif case == "future":
+        clock.advance(timedelta(seconds=-1))
+    headers = {"X-Enrollment-Token": token}
+    if case == "both":
+        headers.update(bootstrap_headers())
+
+    response = client.post("/api/v1/agents/enroll", headers=headers, json=AGENT_METADATA)
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid credentials"}
+    assert token not in response.text
+    clock.current = NOW
+    assert client.get("/api/v1/agents", headers=operator_headers()).json()["total"] == 0
+    audit = client.get(
+        "/api/v1/audit-events",
+        headers=operator_headers(),
+        params={"event_type": "enrollment_grant.redeemed"},
+    )
+    assert audit.json()["total"] == 0
+
+
+@pytest.mark.parametrize("failed_event", ["enrollment_grant.redeemed", "agent.enrolled"])
+def test_grant_redemption_rolls_back_with_agent_and_audit(
+    client: TestClient, failed_event: str
+) -> None:
+    payload = issue_grant(client)
+    original_add = AuditRepository.add
+
+    def fail_audit(repository: AuditRepository, event: Any) -> None:
+        if event.event_type.value == failed_event:
+            raise RuntimeError("audit unavailable")
+        original_add(repository, event)
+
+    with (
+        patch.object(AuditRepository, "add", fail_audit),
+        pytest.raises(RuntimeError, match="audit unavailable"),
+    ):
+        client.post(
+            "/api/v1/agents/enroll",
+            headers={"X-Enrollment-Token": payload["token"]},
+            json=AGENT_METADATA,
+        )
+
+    assert client.get("/api/v1/agents", headers=operator_headers()).json()["total"] == 0
+    audit = client.get("/api/v1/audit-events", headers=operator_headers()).json()
+    assert audit["total"] == 1
+    assert audit["items"][0]["event_type"] == "enrollment_grant.issued"
+    assert (
+        client.post(
+            "/api/v1/agents/enroll",
+            headers={"X-Enrollment-Token": payload["token"]},
+            json=AGENT_METADATA,
+        ).status_code
+        == 201
+    )
+
+
+def test_concurrent_redemptions_create_only_one_agent(client: TestClient) -> None:
+    payload = issue_grant(client)
+    ready = Barrier(2)
+    original_digest_for = EnrollmentGrantRepository.token_digest_for
+
+    def synchronize_read(repository: EnrollmentGrantRepository, grant_id: EnrollmentGrantId) -> Any:
+        digest = original_digest_for(repository, grant_id)
+        ready.wait(timeout=5)
+        return digest
+
+    def redeem() -> int:
+        return client.post(
+            "/api/v1/agents/enroll",
+            headers={"X-Enrollment-Token": payload["token"]},
+            json=AGENT_METADATA,
+        ).status_code
+
+    with (
+        patch.object(EnrollmentGrantRepository, "token_digest_for", synchronize_read),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        results = list(pool.map(lambda _: redeem(), range(2)))
+
+    assert sorted(results) == [201, 401]
+    assert client.get("/api/v1/agents", headers=operator_headers()).json()["total"] == 1
+    audit = client.get("/api/v1/audit-events", headers=operator_headers()).json()
+    assert sorted(event["event_type"] for event in audit["items"]) == [
+        "agent.enrolled",
+        "enrollment_grant.issued",
+        "enrollment_grant.redeemed",
+    ]
+
+
+def test_grant_expiry_is_rechecked_after_agent_insert(
+    client: TestClient, clock: MutableClock
+) -> None:
+    payload = issue_grant(client)
+    original_add = AgentRepository.add
+
+    def delayed_add(repository: AgentRepository, *args: Any, **kwargs: Any) -> Any:
+        agent = original_add(repository, *args, **kwargs)
+        clock.advance(timedelta(seconds=900))
+        return agent
+
+    with patch.object(AgentRepository, "add", delayed_add):
+        response = client.post(
+            "/api/v1/agents/enroll",
+            headers={"X-Enrollment-Token": payload["token"]},
+            json=AGENT_METADATA,
+        )
+
+    assert response.status_code == 401
+    assert client.get("/api/v1/agents", headers=operator_headers()).json()["total"] == 0
+
+
+def test_concurrent_redemption_and_revocation_have_only_one_outcome(client: TestClient) -> None:
+    payload = issue_grant(client)
+    grant_id = payload["grant"]["id"]
+    ready = Barrier(2)
+    original_digest_for = EnrollmentGrantRepository.token_digest_for
+    original_revoke = EnrollmentGrantRepository.revoke_if_pending
+
+    def synchronize_read(repository: EnrollmentGrantRepository, grant_id: EnrollmentGrantId) -> Any:
+        digest = original_digest_for(repository, grant_id)
+        ready.wait(timeout=5)
+        return digest
+
+    def synchronize_revoke(repository: EnrollmentGrantRepository, *args: Any, **kwargs: Any) -> Any:
+        ready.wait(timeout=5)
+        return original_revoke(repository, *args, **kwargs)
+
+    with (
+        patch.object(EnrollmentGrantRepository, "token_digest_for", synchronize_read),
+        patch.object(EnrollmentGrantRepository, "revoke_if_pending", synchronize_revoke),
+        ThreadPoolExecutor(max_workers=2) as pool,
+    ):
+        enrollment = pool.submit(
+            client.post,
+            "/api/v1/agents/enroll",
+            headers={"X-Enrollment-Token": payload["token"]},
+            json=AGENT_METADATA,
+        )
+        revocation = pool.submit(
+            client.post,
+            f"/api/v1/enrollment-grants/{grant_id}/revoke",
+            headers=operator_headers(),
+        )
+        enrolled = enrollment.result()
+        revoked = revocation.result()
+
+    assert (enrolled.status_code, revoked.status_code) in {(201, 409), (401, 200)}
+    inventory = client.get("/api/v1/agents", headers=operator_headers()).json()
+    assert inventory["total"] == (1 if enrolled.status_code == 201 else 0)
+    audit = client.get(
+        "/api/v1/audit-events",
+        headers=operator_headers(),
+        params={"enrollment_grant_id": grant_id},
+    ).json()
+    assert audit["total"] == 2
+    assert sorted(event["event_type"] for event in audit["items"]) == [
+        "enrollment_grant.issued",
+        "enrollment_grant.redeemed" if enrolled.status_code == 201 else "enrollment_grant.revoked",
+    ]
+
+
+@pytest.mark.parametrize("opt_in, token", [(False, BOOTSTRAP_TOKEN), (True, None)])
+def test_bootstrap_operations_require_opt_in_and_token(
+    tmp_path: Path, opt_in: bool, token: str | None
+) -> None:
     engine = create_database_engine(f"sqlite+pysqlite:///{tmp_path / 'disabled.db'}")
     Base.metadata.create_all(engine)
-    app = create_app(Settings(bootstrap_token=None), create_session_factory(engine))
+    app = create_app(
+        Settings(
+            bootstrap_token=None if token is None else SecretStr(token),
+            allow_legacy_bootstrap_enrollment=opt_in,
+        ),
+        create_session_factory(engine),
+    )
 
     with TestClient(app) as client:
-        response = client.post("/api/v1/agents/enroll", json=AGENT_METADATA)
+        response = client.post(
+            "/api/v1/agents/enroll", headers=bootstrap_headers(), json=AGENT_METADATA
+        )
 
     assert response.status_code == 503
     assert response.json() == {"detail": "bootstrap operations are disabled"}

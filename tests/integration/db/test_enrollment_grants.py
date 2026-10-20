@@ -216,3 +216,30 @@ def test_grant_repository_does_not_revoke_redeemed_or_missing_grant(engine: Engi
         )
         assert transitioned is False
         assert missing is None
+
+
+def test_grant_repository_persists_redemption_and_refuses_reuse(engine: Engine) -> None:
+    with Session(engine) as session:
+        repository = EnrollmentGrantRepository(session)
+        repository.add(
+            EnrollmentGrant(
+                id=GRANT_ID,
+                issued_by_operator_id=OPERATOR_ID,
+                created_at=NOW,
+                expires_at=NOW + timedelta(minutes=15),
+            ),
+            digest_enrollment_token(TOKEN),
+        )
+        session.commit()
+        assert repository.redeem_if_pending(GRANT_ID, agent_id=AGENT_ID, now=NOW)
+        session.commit()
+
+    with Session(engine) as session:
+        repository = EnrollmentGrantRepository(session)
+        grant = repository.get(GRANT_ID)
+        assert grant is not None
+        assert grant.redeemed_at == NOW
+        assert grant.redeemed_by_agent_id == AGENT_ID
+        assert not repository.redeem_if_pending(
+            GRANT_ID, agent_id=AGENT_ID, now=NOW + timedelta(seconds=1)
+        )
