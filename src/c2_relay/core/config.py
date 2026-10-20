@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     result_clock_skew_seconds: float = Field(default=300.0, ge=0, le=3600)
     auth_failure_limit: int = Field(default=10, ge=1, le=1000)
     auth_failure_window_seconds: float = Field(default=60.0, gt=0, le=3600)
+    operator_server_url: str = Field(default="http://127.0.0.1:8000", min_length=1)
+    operator_credential: SecretStr | None = Field(default=None, min_length=32)
+    operator_request_timeout: float = Field(default=10.0, gt=0, le=300)
     agent_server_url: str = Field(default="http://127.0.0.1:8000", min_length=1)
     agent_state_path: Path = Path("agent-state.json")
     agent_result_path: Path = Path("pending-result.json")
@@ -42,7 +45,9 @@ class Settings(BaseSettings):
     agent_request_timeout: float = Field(default=10.0, gt=0, le=300)
     agent_max_backoff: float = Field(default=60.0, gt=0, le=3600)
 
-    @field_validator("bootstrap_token", "agent_enrollment_token", mode="before")
+    @field_validator(
+        "bootstrap_token", "agent_enrollment_token", "operator_credential", mode="before"
+    )
     @classmethod
     def blank_token_is_unconfigured(cls, value: SecretStr | str | None) -> SecretStr | str | None:
         if value == "" or (isinstance(value, SecretStr) and not value.get_secret_value()):

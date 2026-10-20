@@ -162,6 +162,22 @@ requires no credentials.
 The development server binds to localhost by default. TLS is an external deployment requirement;
 c2-relay does not claim secure network transport when served directly over plain HTTP.
 
+## Operator CLI
+
+`c2-relay-operator create` remains a local administrative provisioning command. Enrollment
+management uses `grants issue` and `grants revoke`, backed by a separate validated HTTP client
+under `cli/client.py`. Those commands call the running API rather than writing grant rows
+directly, preserving server-side authentication, lifecycle validation, and transactional audit.
+
+The CLI obtains the operator credential from a hidden prompt or an optional operator-side
+setting. Credentials are not accepted as command-line arguments. Responses are validated
+against the existing API/domain contracts before JSON output. Issuance output deliberately
+includes the one-time enrollment token; revocation output contains only the grant record.
+
+Requests have bounded timeouts, keep HTTPS certificate verification enabled, and refuse
+redirects. Grant issuance is not retried automatically. Error output uses fixed messages and
+HTTP status codes, omitting raw server bodies, credentials, and exception payloads.
+
 ## Agent runtime
 
 The agent maintains one long-lived HTTPX2 client with bounded request timeouts. It enrolls once,

@@ -49,6 +49,9 @@ without credential material in the server's security log.
 For a new agent, use the operator-authenticated `POST /api/v1/enrollment-grants` endpoint and set
 `C2_RELAY_AGENT_ENROLLMENT_TOKEN` in `.env` to the returned `c2g.` token. It expires after 15
 minutes by default and can enroll only one agent. Existing agents reuse their saved identity.
+Alternatively, run `uv run c2-relay-operator grants issue` against the running API; the command
+prompts for the operator credential without echoing it and returns the grant and token as JSON.
+Use `uv run c2-relay-operator grants revoke <grant_id>` to revoke an unused grant.
 Legacy bootstrap enrollment requires `C2_RELAY_ALLOW_LEGACY_BOOTSTRAP_ENROLLMENT=true` and a
 configured bootstrap token; it is disabled by default.
 

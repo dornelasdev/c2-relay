@@ -44,13 +44,57 @@ http://127.0.0.1:8000/docs
 http://127.0.0.1:8000/openapi.json
 ```
 
+## Enrollment grants from the operator CLI
+
+With the server running, issue a grant from the request terminal:
+
+```bash
+uv run c2-relay-operator grants issue
+```
+
+The CLI prompts for the operator's `c2o.` credential with hidden input. Its JSON output contains
+the non-secret `grant` record and the one-time `token`. Treat that output as secret: it is the
+same enrollment token returned by Swagger. Copy the token into the agent's
+`C2_RELAY_AGENT_ENROLLMENT_TOKEN` setting before starting a new identity.
+
+The default grant lifetime is 900 seconds. To request a different lifetime within the supported
+60-to-86400-second range, or to revoke a grant that has not been redeemed:
+
+```bash
+uv run c2-relay-operator grants issue --expires-in 300
+uv run c2-relay-operator grants revoke <grant_id>
+```
+
+Replace `<grant_id>` with the UUID in `grant.id`, not the full token. Revocation returns the
+updated grant record without a token. Repeating revocation is safe; revoking a redeemed grant
+returns HTTP `409`, while a missing grant returns HTTP `404`.
+
+Grant commands call the running API; only `c2-relay-operator create` provisions an operator
+directly through the local database. The CLI does not automatically retry grant issuance,
+because a lost response may still correspond to a committed grant.
+
+`C2_RELAY_OPERATOR_SERVER_URL` selects the API origin, and `C2_RELAY_OPERATOR_REQUEST_TIMEOUT`
+sets the timeout in seconds. Each grant command accepts `--server-url` to override that origin.
+Use an HTTP(S) origin without embedded credentials, a path prefix, query parameters, or a
+fragment. Use certificate-validated HTTPS for communication across machines; the CLI does not
+follow redirects or disable certificate verification.
+
+For repeated commands, an optional `C2_RELAY_OPERATOR_CREDENTIAL` setting avoids the prompt.
+Keep it in the operator's local environment or ignored local configuration; never include it
+in an agent deployment's configuration. Leave it blank to use hidden interactive input.
+When hidden input is unavailable, the CLI exits rather than falling back to visible input.
+API errors produce a nonzero exit status and an HTTP status code without printing response
+bodies or credentials.
+
 ## Enroll and run the agent
 
 For a new identity, open Swagger UI's **Authorize** dialog, enter the operator credential in
 **OperatorBearer**, and call
 `POST /api/v1/enrollment-grants` with `{}` for the default 15-minute lifetime. Save the returned
 `token` as `C2_RELAY_AGENT_ENROLLMENT_TOKEN` in `.env`, then start the agent before it expires.
-The `c2g.` token is shown once and can enroll only one agent. The operator can revoke an unused
+The CLI commands above are an alternative to these Swagger requests; issuing through both
+interfaces creates separate grants. The `c2g.` token is shown once and can enroll only one agent.
+The operator can revoke an unused
 grant with `POST /api/v1/enrollment-grants/{grant_id}/revoke`.
 
 An existing `agent-state.json` is reused without a grant. Do not remove a working identity just

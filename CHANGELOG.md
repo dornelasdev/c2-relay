@@ -21,6 +21,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   work without enrollment credentials.
 - Added separate operator and agent bearer schemes in OpenAPI and Swagger UI so manual
   workflows can keep both credentials authorized without repeatedly switching the shared field.
+- Added API-backed `c2-relay-operator grants issue` and `grants revoke` commands with validated
+  JSON responses, hidden credential input, optional operator-side settings, and redacted errors.
 
 ### Changed
 

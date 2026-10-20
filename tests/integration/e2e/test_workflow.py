@@ -1,9 +1,11 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import UUID
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
@@ -15,7 +17,10 @@ from c2_relay.agent.identity import IdentityStore
 from c2_relay.agent.results import PendingResultStore
 from c2_relay.agent.runtime import AgentRuntime
 from c2_relay.api import create_app
+from c2_relay.cli.client import OperatorClient
+from c2_relay.cli.operators import main as operator_main
 from c2_relay.core.config import Settings
+from c2_relay.db.schema import Base
 from c2_relay.db.session import create_database_engine, create_session_factory
 from c2_relay.db.uow import UnitOfWork
 from c2_relay.models import AgentMetadata, TaskId, TaskStatus
@@ -162,3 +167,64 @@ def test_openapi_describes_versioned_routes_and_separate_bearer_authentication(
     assert key_schema["minLength"] == 16
     assert key_schema["maxLength"] == 128
     assert key_schema["pattern"] == r"^[A-Za-z0-9._:-]+$"
+
+
+def test_operator_cli_issues_and_revokes_grants_through_api(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    url = f"sqlite+pysqlite:///{tmp_path / 'operator-cli.db'}"
+    engine = create_database_engine(url)
+    try:
+        Base.metadata.create_all(engine)
+        factory = create_session_factory(engine)
+        OperatorService(
+            factory,
+            clock=lambda: NOW,
+            id_factory=lambda: OPERATOR_UUID,
+            credential_factory=lambda operator_id: SecretStr(OPERATOR_CREDENTIAL),
+        ).provision("CLI Operator")
+        settings = Settings(
+            database_url=url,
+            operator_credential=SecretStr(OPERATOR_CREDENTIAL),
+        )
+        with TestClient(create_app(settings, factory, clock=lambda: NOW)) as api:
+
+            def connected_client(
+                server_url: str, credential: SecretStr, *, timeout: float
+            ) -> OperatorClient:
+                return OperatorClient(server_url, credential, timeout=timeout, client=api)
+
+            with (
+                patch("c2_relay.cli.operators.get_settings", return_value=settings),
+                patch("c2_relay.cli.operators.OperatorClient", side_effect=connected_client),
+                patch("c2_relay.cli.operators.create_database_engine") as local_database,
+            ):
+                operator_main(["grants", "issue", "--expires-in", "120"])
+                issued_output = capsys.readouterr().out
+                issued = json.loads(issued_output)
+                grant_id = issued["grant"]["id"]
+                assert issued["token"].startswith(f"c2g.{grant_id}.")
+                assert OPERATOR_CREDENTIAL not in issued_output
+
+                operator_main(["grants", "revoke", grant_id])
+                revoked = json.loads(capsys.readouterr().out)
+                assert revoked["id"] == grant_id
+                assert revoked["revoked_by_operator_id"] == str(OPERATOR_UUID)
+                assert revoked["revoked_at"] is not None
+                operator_main(["grants", "revoke", grant_id])
+                assert json.loads(capsys.readouterr().out) == revoked
+                local_database.assert_not_called()
+
+            audit = api.get(
+                "/api/v1/audit-events",
+                headers={"Authorization": f"Bearer {OPERATOR_CREDENTIAL}"},
+                params={"enrollment_grant_id": grant_id},
+            )
+            assert audit.json()["total"] == 2
+            assert sorted(event["event_type"] for event in audit.json()["items"]) == [
+                "enrollment_grant.issued",
+                "enrollment_grant.revoked",
+            ]
+            assert issued["token"] not in audit.text
+    finally:
+        engine.dispose()
