@@ -65,15 +65,31 @@ The agent persists its issued identity and any result awaiting delivery in owner
 files. Its runtime supports only the three documented read-only host actions; it does not invoke
 a shell.
 
+## Upgrading to v0.3.0
+
+Back up the existing database and keep its matching agent identity files before upgrading.
+Synchronize the environment and apply migrations using the same database configuration as the
+server:
+
+```bash
+uv sync --locked --dev
+uv run alembic upgrade head
+```
+
+Existing enrolled agents retain their identities. New agents use single-use enrollment grants;
+a configured bootstrap token alone no longer enables legacy enrollment.
+
 ## Platform support
 
-Version `0.2.1` supports Linux and macOS. Host-information actions use cross-platform Python
+Version `0.3.0` supports Linux and macOS. Host-information actions use cross-platform Python
 APIs, but local credential protection currently relies on POSIX `0600` file permissions.
 
 Windows is not considered securely supported yet. Equivalent Windows support requires native
 ACL enforcement or integration with the operating system credential store.
 
 See [`docs/local-runbook.md`](docs/local-runbook.md) for the complete local verification flow.
+The [v0.3.0 verification walkthrough](docs/release-verification-v0.3.0.md) records the normal
+workflow and focused enrollment-security PoCs.
 
 ## License
 

@@ -1,6 +1,6 @@
 # Local verification runbook
 
-This runbook verifies the current development workflow on an authorized local machine.
+This runbook verifies the v0.3.0 workflow on an authorized local machine.
 
 ## Prepare
 

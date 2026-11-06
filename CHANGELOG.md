@@ -7,6 +7,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-06
+
 ### Added
 
 - Added enrollment-grant domain records and migration `20261001_0009`, with issuer attribution,
@@ -29,6 +31,18 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Agent enrollment now requires a grant by default. Legacy shared-bootstrap enrollment requires
   explicit opt-in through `C2_RELAY_ALLOW_LEGACY_BOOTSTRAP_ENROLLMENT` and a configured bootstrap
   token. Invalid or conflicting enrollment headers do not fall back to another credential.
+
+### Known Limitations
+
+- Grant redemption is single use, including retries after a successful commit. If the enrollment
+  response is lost or the agent cannot save its identity, the consumed grant cannot recover its
+  credential. Disable the orphaned agent and issue a new grant.
+- The operator CLI currently covers local provisioning and API-backed grant issuance/revocation.
+  Agent inventory, task management, and audit inspection remain API/Swagger workflows.
+- Localhost HTTP, SQLite, process-local authentication throttling, POSIX credential-file handling,
+  and self-reported metadata retain the deployment and trust limitations documented for v0.2.0.
+  TLS remains required for communication across machines, and audit history is not cryptographic
+  tamper evidence.
 
 ## [0.2.1] - 2026-09-26
 
@@ -135,7 +149,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added reproducible `uv` dependency management, strict Ruff and mypy checks, pytest coverage
   enforcement, packaging, CI, architecture documentation, and a local runbook.
 
-[Unreleased]: https://github.com/dornelasdev/c2-relay/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/dornelasdev/c2-relay/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/dornelasdev/c2-relay/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/dornelasdev/c2-relay/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dornelasdev/c2-relay/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dornelasdev/c2-relay/releases/tag/v0.1.0
