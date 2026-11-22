@@ -182,6 +182,14 @@ Afterward, that agent's credential must receive `401` and task creation for it m
 Stop the agent and server with `Ctrl-C`, restart both, and confirm the agent reuses its existing
 identity rather than enrolling again.
 
+If enrollment or an authenticated agent request receives `401` or `403`, the agent reports the
+HTTP status with a credential-free error on stderr and exits with status 1. Enrollment errors
+point to enrollment credentials and server configuration; later authentication errors point to
+the saved identity and agent status. The message omits raw server responses and credentials.
+The identity and any pending-result file are preserved for inspection or recovery. Normal
+signal-driven shutdown still completes successfully; transient network/server failures retain
+the existing backoff behavior.
+
 ## Release checks
 
 ```bash

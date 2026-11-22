@@ -17,6 +17,10 @@ from c2_relay.agent.results import PendingResultStore
 from c2_relay.models import ActionResult, AgentMetadata
 
 
+class AgentAuthenticationError(RuntimeError):
+    """The server permanently rejected enrollment or agent authentication."""
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -63,7 +67,18 @@ class AgentRuntime:
                         HTTPStatus.UNAUTHORIZED,
                         HTTPStatus.FORBIDDEN,
                     }:
-                        return
+                        status = error.response.status_code
+                        if identity is None:
+                            message = (
+                                f"Enrollment rejected (HTTP {status}). "
+                                "Check enrollment credentials and server configuration."
+                            )
+                        else:
+                            message = (
+                                f"Agent authentication rejected (HTTP {status}). "
+                                "Check the saved identity and agent status."
+                            )
+                        raise AgentAuthenticationError(message) from None
                     failures += 1
                     delay = self._backoff_delay(failures)
                 except httpx2.HTTPError:

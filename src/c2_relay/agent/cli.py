@@ -1,13 +1,14 @@
 """Agent command-line entry point."""
 
 import signal
+import sys
 from threading import Event
 
 from c2_relay.agent.actions import ActionRegistry
 from c2_relay.agent.client import RelayClient
 from c2_relay.agent.identity import IdentityStore
 from c2_relay.agent.results import PendingResultStore
-from c2_relay.agent.runtime import AgentRuntime
+from c2_relay.agent.runtime import AgentAuthenticationError, AgentRuntime
 from c2_relay.core.config import get_settings
 
 
@@ -32,4 +33,8 @@ def main() -> None:
         poll_interval=settings.agent_poll_interval,
         max_backoff=settings.agent_max_backoff,
     )
-    runtime.run(stop)
+    try:
+        runtime.run(stop)
+    except AgentAuthenticationError as error:
+        print(f"c2-relay-agent: {error}", file=sys.stderr)
+        raise SystemExit(1) from None

@@ -7,6 +7,11 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Report permanent agent enrollment and authentication rejections (`401`/`403`) with a
+  credential-free CLI error and exit status 1. Saved identities and pending results are preserved.
+
 ## [0.3.0] - 2026-11-06
 
 ### Added

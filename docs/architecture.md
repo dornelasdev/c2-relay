@@ -190,9 +190,10 @@ so lease recovery can proceed.
 The action registry maps the three domain action kinds directly to Python standard-library host
 inspection functions. There is no subprocess, shell, dynamic import, or arbitrary command path.
 Initial enrollment and later transient HTTP failures use capped exponential backoff with jitter.
-Authentication rejection (`401` or `403`) is permanent and stops the runtime instead of retrying
-a revoked credential. Signal-driven shutdown uses an interruptible event wait rather than an
-uninterruptible sleep.
+Authentication rejection (`401` or `403`) is permanent and raises `AgentAuthenticationError`.
+The CLI reports a credential-free message on stderr and exits with status 1. It does not retry
+the rejected credential or discard the saved identity and pending result. Signal-driven shutdown
+uses an interruptible event wait rather than an uninterruptible sleep.
 
 Lease recovery provides at-least-once execution. This is acceptable for the current read-only
 actions; mutating actions would additionally require execution-level replay protection because

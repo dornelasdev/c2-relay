@@ -12,7 +12,7 @@ from c2_relay.agent.actions import ActionRegistry
 from c2_relay.agent.client import RelayClient
 from c2_relay.agent.identity import AgentIdentity, IdentityStore
 from c2_relay.agent.results import PendingResultStore
-from c2_relay.agent.runtime import AgentRuntime
+from c2_relay.agent.runtime import AgentAuthenticationError, AgentRuntime
 from c2_relay.api.schemas import EnrollmentResponse
 from c2_relay.models import (
     ActionSuccess,
@@ -234,12 +234,20 @@ def test_runtime_retries_initial_enrollment_with_backoff() -> None:
 
 
 @pytest.mark.parametrize("status_code", [401, 403])
-def test_runtime_stops_after_permanent_authentication_failure(status_code: int) -> None:
+@pytest.mark.parametrize("operation", ["check_in", "next_task", "submit_result"])
+def test_runtime_reports_permanent_authentication_failure_without_discarding_results(
+    tmp_path: Path, status_code: int, operation: str
+) -> None:
     client = MagicMock(spec=RelayClient)
-    request = httpx2.Request("POST", "http://relay.test/api/v1/agents/id/check-ins")
+    client.next_task.return_value = None
+    result_store = PendingResultStore(tmp_path / "pending-result.json")
+    if operation == "submit_result":
+        result_store.save(completed_result())
+    secret = "do-not-print-credentials-or-response-content"
+    request = httpx2.Request("POST", "http://relay.test", headers={"Authorization": secret})
     response = httpx2.Response(status_code, request=request)
-    client.check_in.side_effect = httpx2.HTTPStatusError(
-        "authentication rejected",
+    getattr(client, operation).side_effect = httpx2.HTTPStatusError(
+        secret,
         request=request,
         response=response,
     )
@@ -248,11 +256,17 @@ def test_runtime_stops_after_permanent_authentication_failure(status_code: int) 
     stop = MagicMock(spec=Event)
     stop.is_set.return_value = False
 
-    runtime(client, store).run(stop)
+    with pytest.raises(
+        AgentAuthenticationError, match=f"Agent authentication rejected.*{status_code}"
+    ) as error:
+        runtime(client, store, result_store).run(stop)
 
+    assert secret not in str(error.value)
     stop.wait.assert_not_called()
-    client.check_in.assert_called_once()
+    getattr(client, operation).assert_called_once()
     client.close.assert_called_once()
+    if operation == "submit_result":
+        assert result_store.load() == completed_result()
 
 
 def test_runtime_backs_off_after_retryable_server_status() -> None:
@@ -349,11 +363,12 @@ def test_runtime_reuses_saved_identity_without_enrollment_tokens() -> None:
     client.check_in.assert_called_once()
 
 
-def test_runtime_does_not_fall_back_after_rejected_grant() -> None:
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_runtime_does_not_fall_back_after_rejected_grant(status_code: int) -> None:
     client = MagicMock(spec=RelayClient)
     request = httpx2.Request("POST", "http://relay.test/api/v1/agents/enroll")
     client.enroll.side_effect = httpx2.HTTPStatusError(
-        "grant rejected", request=request, response=httpx2.Response(401, request=request)
+        "grant rejected", request=request, response=httpx2.Response(status_code, request=request)
     )
     store = MagicMock(spec=IdentityStore)
     store.load.return_value = None
@@ -370,7 +385,8 @@ def test_runtime_does_not_fall_back_after_rejected_grant() -> None:
         metadata_factory=lambda: METADATA,
     )
 
-    value.run(Event())
+    with pytest.raises(AgentAuthenticationError, match=f"Enrollment rejected.*{status_code}"):
+        value.run(Event())
 
     client.enroll.assert_called_once_with(METADATA, SecretStr("grant-token"))
     store.save.assert_not_called()
