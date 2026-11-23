@@ -7,6 +7,12 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added read-only operator CLI commands for agent inventory, task lists/details, stored results,
+  and audit history. Commands use the existing API, preserve JSON response shapes, validate UUIDs
+  and bounded filters locally, and reuse operator authentication and redacted error handling.
+
 ### Fixed
 
 - Report permanent agent enrollment and authentication rejections (`401`/`403`) with a

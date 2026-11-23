@@ -86,6 +86,39 @@ When hidden input is unavailable, the CLI exits rather than falling back to visi
 API errors produce a nonzero exit status and an HTTP status code without printing response
 bodies or credentials.
 
+## Read-only operator CLI (Unreleased)
+
+These commands are available on the development branch after v0.3.0. With the API running, use
+the same operator-side server URL and credential configuration as the grant commands:
+
+```bash
+uv run c2-relay-operator agents list
+uv run c2-relay-operator agents list --status active --limit 10
+uv run c2-relay-operator tasks list --agent-id <agent_id> --status completed
+uv run c2-relay-operator tasks show <task_id>
+uv run c2-relay-operator tasks result <task_id>
+uv run c2-relay-operator audit list --task-id <task_id>
+uv run c2-relay-operator audit list --event-type enrollment_grant.redeemed --enrollment-grant-id <grant_id>
+```
+
+Replace the placeholders with the corresponding UUIDs. Task listing accepts `--agent-id` and
+`--status`. Audit listing accepts `--event-type`, `--operator-id`, `--agent-id`, `--task-id`, and
+`--enrollment-grant-id`; supplied filters are combined. All five commands accept `--server-url`.
+
+List commands default to `--limit 50 --offset 0`, with a maximum limit of 100 and offsets from
+0 through 1000000. Each invocation requests one page, and `total` counts all matching records,
+not just the returned `items`. Increase the offset explicitly to inspect later pages. UUID,
+enum, and pagination errors exit with status 2 before prompting for a credential.
+
+The output is JSON with the API's existing shape: lists contain `items`, `total`, `limit`, and
+`offset`; task detail is the task object; a stored result remains under `item`, with nested
+`result` and server-owned `received_at`. An empty page is a successful response. A task without
+a stored result returns HTTP 404, which the CLI reports with a nonzero exit status.
+
+These commands perform GET requests using operator credentials. They preserve the same timeout,
+redirect refusal, response validation, and error redaction as the grant commands. Task creation,
+cancellation, agent selection shortcuts, and local task context are outside this slice.
+
 ## Enroll and run the agent
 
 For a new identity, open Swagger UI's **Authorize** dialog, enter the operator credential in

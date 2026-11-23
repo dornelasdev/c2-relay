@@ -10,16 +10,40 @@ import httpx2
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from c2_relay.api.schemas import EnrollmentGrantCreateRequest, EnrollmentGrantIssueResponse
+from c2_relay.api.schemas import (
+    AgentListResponse,
+    AuditEventListResponse,
+    EnrollmentGrantCreateRequest,
+    EnrollmentGrantIssueResponse,
+    StoredResultResponse,
+    TaskListResponse,
+)
 from c2_relay.cli.operators import main
 from c2_relay.core.config import Settings
-from c2_relay.models import EnrollmentGrant, EnrollmentGrantId, Operator, OperatorId
+from c2_relay.models import (
+    ActionSuccess,
+    AgentId,
+    AgentStatus,
+    AuditEventType,
+    EnrollmentGrant,
+    EnrollmentGrantId,
+    HostnameAction,
+    HostnameOutput,
+    Operator,
+    OperatorId,
+    StoredActionResult,
+    Task,
+    TaskId,
+    TaskStatus,
+)
 from c2_relay.services.operators import ProvisionedOperator
 
 NOW = datetime(2026, 9, 1, 12, tzinfo=UTC)
 OPERATOR_ID = OperatorId(UUID("30000000-0000-4000-8000-000000000001"))
 CREDENTIAL = "c2o.30000000-0000-4000-8000-000000000001." + "x" * 32
 GRANT_ID = EnrollmentGrantId(UUID("50000000-0000-4000-8000-000000000001"))
+AGENT_ID = AgentId(UUID("20000000-0000-4000-8000-000000000001"))
+TASK_ID = TaskId(UUID("10000000-0000-4000-8000-000000000001"))
 TOKEN = f"c2g.{GRANT_ID}.{'g' * 32}"
 GRANT = EnrollmentGrant(
     id=GRANT_ID,
@@ -35,6 +59,30 @@ def configured_cli() -> Iterator[tuple[MagicMock, MagicMock]]:
     client.issue_grant.return_value = EnrollmentGrantIssueResponse(grant=GRANT, token=TOKEN)
     client.revoke_grant.return_value = GRANT.model_copy(
         update={"revoked_at": NOW, "revoked_by_operator_id": OPERATOR_ID}
+    )
+    client.list_agents.return_value = AgentListResponse(items=(), total=0, limit=50, offset=0)
+    client.list_tasks.return_value = TaskListResponse(items=(), total=0, limit=50, offset=0)
+    client.list_audit_events.return_value = AuditEventListResponse(
+        items=(), total=0, limit=50, offset=0
+    )
+    client.get_task.return_value = Task(
+        id=TASK_ID,
+        agent_id=AGENT_ID,
+        action=HostnameAction(),
+        status=TaskStatus.COMPLETED,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    client.get_task_result.return_value = StoredResultResponse(
+        item=StoredActionResult(
+            result=ActionSuccess(
+                task_id=TASK_ID,
+                agent_id=AGENT_ID,
+                completed_at=NOW,
+                output=HostnameOutput(hostname="read-test"),
+            ),
+            received_at=NOW,
+        )
     )
     with (
         patch(
@@ -277,3 +325,198 @@ def test_operator_cli_invalid_url_error_is_sanitized(
     assert error.value.code == 1
     output = capsys.readouterr()
     assert CREDENTIAL not in output.err + output.out
+
+
+@pytest.mark.parametrize(
+    "arguments, method, expected",
+    [
+        (["agents", "list"], "list_agents", {"status": None, "limit": 50, "offset": 0}),
+        (
+            ["agents", "list", "--status", "disabled", "--limit", "1", "--offset", "2"],
+            "list_agents",
+            {"status": AgentStatus.DISABLED, "limit": 1, "offset": 2},
+        ),
+        (
+            ["agents", "list", "--limit", "100", "--offset", "1000000"],
+            "list_agents",
+            {"status": None, "limit": 100, "offset": 1_000_000},
+        ),
+        (
+            ["tasks", "list"],
+            "list_tasks",
+            {"agent_id": None, "status": None, "limit": 50, "offset": 0},
+        ),
+        (
+            [
+                "tasks",
+                "list",
+                "--agent-id",
+                str(AGENT_ID),
+                "--status",
+                "completed",
+                "--limit",
+                "2",
+                "--offset",
+                "1",
+            ],
+            "list_tasks",
+            {"agent_id": AGENT_ID, "status": TaskStatus.COMPLETED, "limit": 2, "offset": 1},
+        ),
+        (["tasks", "show", str(TASK_ID)], "get_task", {"task_id": TASK_ID}),
+        (["tasks", "result", str(TASK_ID)], "get_task_result", {"task_id": TASK_ID}),
+        (
+            ["audit", "list"],
+            "list_audit_events",
+            {
+                "event_type": None,
+                "operator_id": None,
+                "agent_id": None,
+                "task_id": None,
+                "enrollment_grant_id": None,
+                "limit": 50,
+                "offset": 0,
+            },
+        ),
+        (
+            [
+                "audit",
+                "list",
+                "--event-type",
+                "task.created",
+                "--operator-id",
+                str(OPERATOR_ID),
+                "--agent-id",
+                str(AGENT_ID),
+                "--task-id",
+                str(TASK_ID),
+                "--enrollment-grant-id",
+                str(GRANT_ID),
+                "--limit",
+                "3",
+                "--offset",
+                "4",
+            ],
+            "list_audit_events",
+            {
+                "event_type": AuditEventType.TASK_CREATED,
+                "operator_id": OPERATOR_ID,
+                "agent_id": AGENT_ID,
+                "task_id": TASK_ID,
+                "enrollment_grant_id": GRANT_ID,
+                "limit": 3,
+                "offset": 4,
+            },
+        ),
+    ],
+)
+def test_operator_cli_read_commands_forward_typed_filters_and_preserve_json(
+    configured_cli: tuple[MagicMock, MagicMock],
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    method: str,
+    expected: dict[str, object],
+) -> None:
+    client, factory = configured_cli
+
+    main([*arguments, "--server-url", "https://relay.test"])
+
+    factory.assert_called_once_with("https://relay.test", SecretStr(CREDENTIAL), timeout=10)
+    operation = getattr(client, method)
+    operation.assert_called_once_with(**expected)
+    output = capsys.readouterr()
+    assert json.loads(output.out) == operation.return_value.model_dump(mode="json")
+    assert CREDENTIAL not in output.out + output.err
+    client.close.assert_called_once()
+    client.issue_grant.assert_not_called()
+    client.revoke_grant.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["agents", "tasks", "audit"])
+@pytest.mark.parametrize(
+    "option, value",
+    [
+        ("--limit", "0"),
+        ("--limit", "101"),
+        ("--limit", "not-an-integer"),
+        ("--offset", "-1"),
+        ("--offset", "1000001"),
+        ("--offset", "not-an-integer"),
+    ],
+)
+def test_operator_cli_rejects_invalid_pagination_before_credential_input(
+    configured_cli: tuple[MagicMock, MagicMock],
+    command: str,
+    option: str,
+    value: str,
+) -> None:
+    _, factory = configured_cli
+    with (
+        patch("c2_relay.cli.operators.getpass") as prompt,
+        pytest.raises(SystemExit) as error,
+    ):
+        main([command, "list", option, value])
+    assert error.value.code == 2
+    prompt.assert_not_called()
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["tasks", "show", "not-a-uuid"],
+        ["tasks", "result", "not-a-uuid"],
+        ["tasks", "list", "--agent-id", "not-a-uuid"],
+        ["audit", "list", "--enrollment-grant-id", "not-a-uuid"],
+        ["agents", "list", "--status", "unknown"],
+        ["tasks", "list", "--status", "unknown"],
+        ["audit", "list", "--event-type", "unknown"],
+    ],
+)
+def test_operator_cli_rejects_invalid_identifiers_and_enum_filters(
+    configured_cli: tuple[MagicMock, MagicMock],
+    arguments: list[str],
+) -> None:
+    _, factory = configured_cli
+    with pytest.raises(SystemExit) as error:
+        main(arguments)
+    assert error.value.code == 2
+    factory.assert_not_called()
+
+
+def test_operator_cli_invalid_read_response_is_sanitized(
+    configured_cli: tuple[MagicMock, MagicMock], capsys: pytest.CaptureFixture[str]
+) -> None:
+    client, _ = configured_cli
+    with pytest.raises(ValidationError) as validation:
+        Task.model_validate({"credential": CREDENTIAL})
+    client.get_task.side_effect = validation.value
+    with pytest.raises(SystemExit) as error:
+        main(["tasks", "show", str(TASK_ID)])
+    assert error.value.code == 1
+    output = capsys.readouterr()
+    assert "API returned invalid response data" in output.err
+    assert CREDENTIAL not in output.err + output.out
+    assert output.out == ""
+    client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("status", [401, 404])
+def test_operator_cli_read_http_errors_do_not_print_raw_bodies(
+    configured_cli: tuple[MagicMock, MagicMock], capsys: pytest.CaptureFixture[str], status: int
+) -> None:
+    client, _ = configured_cli
+    request = httpx2.Request("GET", f"http://relay.test/api/v1/tasks/{TASK_ID}/result")
+    client.get_task_result.side_effect = httpx2.HTTPStatusError(
+        CREDENTIAL,
+        request=request,
+        response=httpx2.Response(status, request=request, json={"detail": TOKEN}),
+    )
+    with pytest.raises(SystemExit) as error:
+        main(["tasks", "result", str(TASK_ID)])
+    assert error.value.code == 1
+    output = capsys.readouterr()
+    assert f"HTTP {status}" in output.err
+    assert CREDENTIAL not in output.err + output.out
+    assert TOKEN not in output.err + output.out
+    assert output.out == ""
+    client.close.assert_called_once()

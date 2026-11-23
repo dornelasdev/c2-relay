@@ -169,10 +169,19 @@ management uses `grants issue` and `grants revoke`, backed by a separate validat
 under `cli/client.py`. Those commands call the running API rather than writing grant rows
 directly, preserving server-side authentication, lifecycle validation, and transactional audit.
 
+The development CLI also exposes read-only `agents list`, `tasks list`, `tasks show`,
+`tasks result`, and `audit list` commands. They send GET requests through that client and validate
+responses against existing API/domain contracts. The CLI validates UUIDs, status/event enums,
+and pagination bounds before credential input or network requests. Each list command fetches
+one page with the same defaults and limits as the API; it does not automatically enumerate all
+records. Task and stored-result JSON retain their existing response shapes.
+
 The CLI obtains the operator credential from a hidden prompt or an optional operator-side
 setting. Credentials are not accepted as command-line arguments. Responses are validated
 against the existing API/domain contracts before JSON output. Issuance output deliberately
 includes the one-time enrollment token; revocation output contains only the grant record.
+Read commands use the operator credential and do not create tasks, change agent status, or
+issue grants. They do not use agent credentials or access the database directly.
 
 Requests have bounded timeouts, keep HTTPS certificate verification enabled, and refuse
 redirects. Grant issuance is not retried automatically. Error output uses fixed messages and

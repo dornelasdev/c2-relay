@@ -1,10 +1,29 @@
-"""Validated HTTP client for operator enrollment workflows."""
+"""Validated HTTP client for operator management and inspection."""
+
+from uuid import UUID
 
 import httpx2
 from pydantic import SecretStr
 
-from c2_relay.api.schemas import EnrollmentGrantCreateRequest, EnrollmentGrantIssueResponse
-from c2_relay.models import EnrollmentGrant, EnrollmentGrantId
+from c2_relay.api.schemas import (
+    AgentListResponse,
+    AuditEventListResponse,
+    EnrollmentGrantCreateRequest,
+    EnrollmentGrantIssueResponse,
+    StoredResultResponse,
+    TaskListResponse,
+)
+from c2_relay.models import (
+    AgentId,
+    AgentStatus,
+    AuditEventType,
+    EnrollmentGrant,
+    EnrollmentGrantId,
+    OperatorId,
+    Task,
+    TaskId,
+    TaskStatus,
+)
 
 
 class OperatorClient:
@@ -55,6 +74,67 @@ class OperatorClient:
         )
         response.raise_for_status()
         return EnrollmentGrant.model_validate_json(response.content)
+
+    def list_agents(
+        self, *, status: AgentStatus | None = None, limit: int = 50, offset: int = 0
+    ) -> AgentListResponse:
+        return AgentListResponse.model_validate_json(
+            self._get("/api/v1/agents", status=status, limit=limit, offset=offset)
+        )
+
+    def list_tasks(
+        self,
+        *,
+        agent_id: AgentId | None = None,
+        status: TaskStatus | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> TaskListResponse:
+        return TaskListResponse.model_validate_json(
+            self._get("/api/v1/tasks", agent_id=agent_id, status=status, limit=limit, offset=offset)
+        )
+
+    def get_task(self, task_id: TaskId) -> Task:
+        return Task.model_validate_json(self._get(f"/api/v1/tasks/{task_id}"))
+
+    def get_task_result(self, task_id: TaskId) -> StoredResultResponse:
+        return StoredResultResponse.model_validate_json(
+            self._get(f"/api/v1/tasks/{task_id}/result")
+        )
+
+    def list_audit_events(
+        self,
+        *,
+        event_type: AuditEventType | None = None,
+        operator_id: OperatorId | None = None,
+        agent_id: AgentId | None = None,
+        task_id: TaskId | None = None,
+        enrollment_grant_id: EnrollmentGrantId | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> AuditEventListResponse:
+        return AuditEventListResponse.model_validate_json(
+            self._get(
+                "/api/v1/audit-events",
+                event_type=event_type,
+                operator_id=operator_id,
+                agent_id=agent_id,
+                task_id=task_id,
+                enrollment_grant_id=enrollment_grant_id,
+                limit=limit,
+                offset=offset,
+            )
+        )
+
+    def _get(self, path: str, **params: str | int | UUID | None) -> bytes:
+        response = self._client.get(
+            path,
+            headers=self._authorization(),
+            params={key: str(value) for key, value in params.items() if value is not None},
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        return response.content
 
     def _authorization(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._credential.get_secret_value()}"}

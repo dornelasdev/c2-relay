@@ -65,6 +65,23 @@ The agent persists its issued identity and any result awaiting delivery in owner
 files. Its runtime supports only the three documented read-only host actions; it does not invoke
 a shell.
 
+## Operator inspection (Unreleased)
+
+The development branch includes read-only CLI commands for existing agents, tasks, results,
+and audit events:
+
+```bash
+uv run c2-relay-operator agents list --status active
+uv run c2-relay-operator tasks list --status completed
+uv run c2-relay-operator tasks show <task_id>
+uv run c2-relay-operator tasks result <task_id>
+uv run c2-relay-operator audit list --event-type task.completed
+```
+
+Replace `<task_id>` with a task UUID. Commands use the operator credential through the existing
+hidden prompt or operator-side configuration and print validated JSON. Lists return one bounded
+page; use `--limit` and `--offset` for pagination. See the local runbook for filters and examples.
+
 ## Upgrading to v0.3.0
 
 Back up the existing database and keep its matching agent identity files before upgrading.

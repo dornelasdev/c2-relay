@@ -31,7 +31,9 @@ OPERATOR_UUID = UUID("30000000-0000-4000-8000-000000000001")
 OPERATOR_CREDENTIAL = f"c2o.{OPERATOR_UUID}.{'o' * 32}"
 
 
-def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
+def test_assembled_agent_server_workflow(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'workflow.db'}"
     migration_config = Config("alembic.ini")
     migration_config.attributes["database_url"] = database_url
@@ -104,6 +106,90 @@ def test_assembled_agent_server_workflow(tmp_path: Path) -> None:
         task_id = TaskId(UUID(task_response.json()["id"]))
 
         runtime.run_once(identity)
+
+        cli_settings = settings.model_copy(
+            update={"operator_credential": SecretStr(OPERATOR_CREDENTIAL)}
+        )
+        audit_before = operator_client.get(
+            "/api/v1/audit-events", headers={"Authorization": f"Bearer {OPERATOR_CREDENTIAL}"}
+        ).json()["total"]
+
+        def connected_client(
+            server_url: str, credential: SecretStr, *, timeout: float
+        ) -> OperatorClient:
+            return OperatorClient(server_url, credential, timeout=timeout, client=operator_client)
+
+        with (
+            patch("c2_relay.cli.operators.get_settings", return_value=cli_settings),
+            patch("c2_relay.cli.operators.OperatorClient", side_effect=connected_client),
+            patch("c2_relay.cli.operators.create_database_engine") as local_database,
+        ):
+            operator_main(["agents", "list", "--status", "active"])
+            agents = json.loads(capsys.readouterr().out)
+            assert agents["total"] == 1
+            assert agents["items"][0]["id"] == str(identity.agent_id)
+            assert "credential" not in agents["items"][0]
+
+            operator_main(
+                [
+                    "tasks",
+                    "list",
+                    "--agent-id",
+                    str(identity.agent_id),
+                    "--status",
+                    "completed",
+                    "--limit",
+                    "1",
+                ]
+            )
+            tasks = json.loads(capsys.readouterr().out)
+            assert tasks["total"] == tasks["limit"] == 1
+            assert tasks["items"][0]["id"] == str(task_id)
+
+            operator_main(["tasks", "show", str(task_id)])
+            task = json.loads(capsys.readouterr().out)
+            assert task["id"] == str(task_id)
+            assert task["status"] == "completed"
+
+            operator_main(["tasks", "result", str(task_id)])
+            result = json.loads(capsys.readouterr().out)["item"]
+            assert result["result"]["task_id"] == str(task_id)
+            assert result["result"]["output"]["kind"] == "host.hostname"
+            assert result["received_at"]
+
+            operator_main(
+                ["audit", "list", "--task-id", str(task_id), "--event-type", "task.completed"]
+            )
+            audit = json.loads(capsys.readouterr().out)
+            assert audit["total"] == 1
+            assert audit["items"][0]["task_id"] == str(task_id)
+
+            operator_main(
+                ["audit", "list", "--enrollment-grant-id", grant_response.json()["grant"]["id"]]
+            )
+            assert json.loads(capsys.readouterr().out)["total"] == 2
+
+            wrong_credential = SecretStr(f"c2o.{OPERATOR_UUID}.{'z' * 32}")
+            with (
+                patch(
+                    "c2_relay.cli.operators.get_settings",
+                    return_value=cli_settings.model_copy(
+                        update={"operator_credential": wrong_credential}
+                    ),
+                ),
+                pytest.raises(SystemExit) as error,
+            ):
+                operator_main(["agents", "list"])
+            assert error.value.code == 1
+            rejected = capsys.readouterr()
+            assert "HTTP 401" in rejected.err
+            assert wrong_credential.get_secret_value() not in rejected.err + rejected.out
+            local_database.assert_not_called()
+
+        audit_after = operator_client.get(
+            "/api/v1/audit-events", headers={"Authorization": f"Bearer {OPERATOR_CREDENTIAL}"}
+        ).json()["total"]
+        assert audit_after == audit_before
 
     with UnitOfWork(factory) as uow:
         persisted_task = uow.tasks.get(task_id)
