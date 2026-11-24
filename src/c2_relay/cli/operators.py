@@ -10,7 +10,8 @@ import httpx2
 from pydantic import SecretStr, ValidationError
 
 from c2_relay.api.schemas import EnrollmentGrantCreateRequest
-from c2_relay.cli.client import OperatorClient
+from c2_relay.cli.client import OperatorClient, normalize_server_url
+from c2_relay.cli.context import OperatorContext, OperatorContextError, OperatorContextStore
 from c2_relay.core.config import Settings, get_settings
 from c2_relay.core.security import parse_operator_credential
 from c2_relay.db.session import create_database_engine, create_session_factory
@@ -57,16 +58,26 @@ def _parser() -> argparse.ArgumentParser:
     agent_commands = agents.add_subparsers(dest="agent_command", required=True)
     agent_list = agent_commands.add_parser("list", help="list a page of agents")
     agent_list.add_argument("--status", type=AgentStatus, choices=list(AgentStatus))
+    agent_use = agent_commands.add_parser(
+        "use", help="remember an active agent for this server/operator"
+    )
+    agent_use.add_argument("agent_id", type=UUID)
 
     tasks = commands.add_parser("tasks", help="inspect tasks and stored results")
     task_commands = tasks.add_subparsers(dest="task_command", required=True)
     task_list = task_commands.add_parser("list", help="list a page of tasks")
-    task_list.add_argument("--agent-id", type=UUID)
+    task_agent = task_list.add_mutually_exclusive_group()
+    task_agent.add_argument("--agent-id", type=UUID)
+    task_agent.add_argument("--all-agents", action="store_true", help="ignore the selected agent")
     task_list.add_argument("--status", type=TaskStatus, choices=list(TaskStatus))
     task_show = task_commands.add_parser("show", help="inspect one task")
-    task_show.add_argument("task_id", type=UUID)
+    task_show.add_argument(
+        "task_id", type=UUID, nargs="?", help="task UUID; defaults to the last task"
+    )
     task_result = task_commands.add_parser("result", help="inspect a stored task result")
-    task_result.add_argument("task_id", type=UUID)
+    task_result.add_argument(
+        "task_id", type=UUID, nargs="?", help="task UUID; defaults to the last task"
+    )
 
     audit = commands.add_parser("audit", help="inspect audit history")
     audit_commands = audit.add_subparsers(dest="audit_command", required=True)
@@ -77,10 +88,30 @@ def _parser() -> argparse.ArgumentParser:
     audit_list.add_argument("--task-id", type=UUID)
     audit_list.add_argument("--enrollment-grant-id", type=UUID)
 
+    context = commands.add_parser("context", help="inspect or reset local operator selections")
+    context_commands = context.add_subparsers(dest="context_command", required=True)
+    context_show = context_commands.add_parser(
+        "show", help="show selections for this server/operator"
+    )
+    context_clear = context_commands.add_parser(
+        "clear", help="reset selections for this server/operator"
+    )
+
     for command in (agent_list, task_list, audit_list):
         command.add_argument("--limit", type=_page_limit, default=50, help="page size (1-100)")
         command.add_argument("--offset", type=_page_offset, default=0, help="offset (0-1000000)")
-    for command in (issue, revoke, agent_list, task_list, task_show, task_result, audit_list):
+    for command in (
+        issue,
+        revoke,
+        agent_list,
+        agent_use,
+        task_list,
+        task_show,
+        task_result,
+        audit_list,
+        context_show,
+        context_clear,
+    ):
         command.add_argument("--server-url", help="API origin; defaults to operator settings")
     return parser
 
@@ -97,17 +128,46 @@ def _provision(name: str, settings: Settings) -> None:
     print("Store this credential securely; it will not be shown again.")
 
 
-def _read_task(arguments: argparse.Namespace, client: OperatorClient) -> DomainModel:
+def _read_task(
+    arguments: argparse.Namespace,
+    client: OperatorClient,
+    store: OperatorContextStore,
+    server_url: str,
+    operator_id: OperatorId,
+) -> DomainModel:
     if arguments.task_command == "list":
+        agent_id = None
+        if arguments.agent_id is not None:
+            agent_id = AgentId(arguments.agent_id)
+        elif not arguments.all_agents:
+            agent_id = store.load(server_url, operator_id).selected_agent_id
         return client.list_tasks(
-            agent_id=AgentId(arguments.agent_id) if arguments.agent_id is not None else None,
+            agent_id=agent_id,
             status=arguments.status,
             limit=arguments.limit,
             offset=arguments.offset,
         )
+    context = store.load(server_url, operator_id)
+    task_id = TaskId(arguments.task_id) if arguments.task_id is not None else context.last_task_id
+    if task_id is None:
+        raise OperatorContextError(
+            "No last task for this server/operator. Supply a task UUID first."
+        )
+    response: DomainModel
     if arguments.task_command == "show":
-        return client.get_task(task_id=TaskId(arguments.task_id))
-    return client.get_task_result(task_id=TaskId(arguments.task_id))
+        task = client.get_task(task_id=task_id)
+        received_id = task.id
+        response = task
+    else:
+        stored = client.get_task_result(task_id=task_id)
+        received_id = stored.item.result.task_id
+        response = stored
+    if received_id != task_id:
+        raise OperatorContextError(
+            "API returned a different task. Operator context was not changed."
+        )
+    store.save(context.model_copy(update={"last_task_id": task_id}))
+    return response
 
 
 def _run_api_command(arguments: argparse.Namespace, settings: Settings) -> None:
@@ -119,20 +179,48 @@ def _run_api_command(arguments: argparse.Namespace, settings: Settings) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error", GetPassWarning)
             credential = SecretStr(getpass("Operator credential: "))
-    parse_operator_credential(credential.get_secret_value())
+    parsed = parse_operator_credential(credential.get_secret_value())
+    server_url = normalize_server_url(arguments.server_url or settings.operator_server_url)
+    store = OperatorContextStore(settings.operator_context_path)
+    if arguments.command == "context":
+        context = store.load(server_url, parsed.operator_id)
+        if arguments.context_command == "clear":
+            context = context.model_copy(update={"selected_agent_id": None, "last_task_id": None})
+            store.save(context)
+        print(context.model_dump_json(indent=2))
+        return
     client = OperatorClient(
-        arguments.server_url or settings.operator_server_url,
+        server_url,
         credential,
         timeout=settings.operator_request_timeout,
     )
     try:
-        response: DomainModel
+        response: DomainModel | OperatorContext
         if arguments.command == "agents":
-            response = client.list_agents(
-                status=arguments.status, limit=arguments.limit, offset=arguments.offset
-            )
+            if arguments.agent_command == "use":
+                context = store.load(server_url, parsed.operator_id)
+                agent_id = AgentId(arguments.agent_id)
+                agent = client.get_agent(agent_id)
+                if agent.id != agent_id:
+                    raise OperatorContextError(
+                        "API returned a different agent. Context was not changed."
+                    )
+                if agent.status is not AgentStatus.ACTIVE:
+                    raise OperatorContextError(
+                        "Selected agent is disabled. Choose an active agent."
+                    )
+                values: dict[str, object] = {"selected_agent_id": agent.id}
+                if context.selected_agent_id != agent.id:
+                    values["last_task_id"] = None
+                context = context.model_copy(update=values)
+                store.save(context)
+                response = context
+            else:
+                response = client.list_agents(
+                    status=arguments.status, limit=arguments.limit, offset=arguments.offset
+                )
         elif arguments.command == "tasks":
-            response = _read_task(arguments, client)
+            response = _read_task(arguments, client, store, server_url, parsed.operator_id)
         elif arguments.command == "audit":
             response = client.list_audit_events(
                 event_type=arguments.event_type,
@@ -174,6 +262,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.exit(1, "Hidden credential input unavailable; set C2_RELAY_OPERATOR_CREDENTIAL.\n")
     except KeyboardInterrupt:
         parser.exit(1, "Operator command interrupted.\n")
+    except OperatorContextError as error:
+        parser.exit(1, f"{error}\n")
     except httpx2.HTTPStatusError as error:
         parser.exit(1, f"API request failed (HTTP {error.response.status_code}).\n")
     except httpx2.HTTPError:

@@ -6,7 +6,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from c2_relay.api.schemas import EnrollmentGrantCreateRequest
-from c2_relay.cli.client import OperatorClient
+from c2_relay.cli.client import OperatorClient, normalize_server_url
 from c2_relay.models import (
     ActionSuccess,
     AgentId,
@@ -76,6 +76,19 @@ def test_operator_client_issues_revokes_and_uses_only_operator_authentication() 
 def test_operator_client_closes_owned_client() -> None:
     client = OperatorClient("https://relay.test", CREDENTIAL, timeout=1)
     client.close()
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("HTTP://RELAY.TEST:80/", "http://relay.test"),
+        ("HTTPS://RELAY.TEST:443/", "https://relay.test"),
+        ("https://relay.test:8443/", "https://relay.test:8443"),
+        ("http://[::1]:80/", "http://[::1]"),
+    ],
+)
+def test_operator_origins_normalize_default_ports(url: str, expected: str) -> None:
+    assert normalize_server_url(url) == expected
 
 
 @pytest.mark.parametrize(
@@ -189,6 +202,7 @@ def test_operator_client_reads_typed_resources_and_encodes_filters() -> None:
             "offset": 2,
         },
         f"/api/v1/tasks/{TASK_ID}": task.model_dump(mode="json"),
+        f"/api/v1/agents/{AGENT_ID}": agent.model_dump(mode="json"),
         f"/api/v1/tasks/{TASK_ID}/result": {"item": stored.model_dump(mode="json")},
         "/api/v1/audit-events": {"items": [], "total": 0, "limit": 4, "offset": 3},
     }
@@ -220,6 +234,7 @@ def test_operator_client_reads_typed_resources_and_encodes_filters() -> None:
             ).items
             == ()
         )
+        assert client.get_agent(AGENT_ID) == agent
 
     assert dict(requests[0].url.params) == {"status": "active", "limit": "2", "offset": "1"}
     assert dict(requests[1].url.params) == {
@@ -263,6 +278,7 @@ def test_operator_client_list_defaults_omit_unset_filters(method: str) -> None:
     "method, args",
     [
         ("list_agents", ()),
+        ("get_agent", (AGENT_ID,)),
         ("list_tasks", ()),
         ("get_task", (TASK_ID,)),
         ("get_task_result", (TASK_ID,)),

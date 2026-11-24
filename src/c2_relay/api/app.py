@@ -151,6 +151,18 @@ def _router(
             )
         return AgentListResponse(items=agents, total=total, limit=limit, offset=offset)
 
+    @router.get("/agents/{agent_id}", response_model=RegisteredAgent)
+    def get_agent(
+        agent_id: AgentId,
+        operator: Annotated[Operator, Depends(require_operator)],
+    ) -> RegisteredAgent:
+        del operator
+        with UnitOfWork(factory) as uow:
+            agent = uow.agents.get(agent_id)
+        if agent is None:
+            raise HTTPException(HTTPStatus.NOT_FOUND, "agent not found")
+        return agent
+
     @router.get("/audit-events", response_model=AuditEventListResponse)
     def list_audit_events(
         operator: Annotated[Operator, Depends(require_operator)],

@@ -103,7 +103,7 @@ uv run c2-relay-operator audit list --event-type enrollment_grant.redeemed --enr
 
 Replace the placeholders with the corresponding UUIDs. Task listing accepts `--agent-id` and
 `--status`. Audit listing accepts `--event-type`, `--operator-id`, `--agent-id`, `--task-id`, and
-`--enrollment-grant-id`; supplied filters are combined. All five commands accept `--server-url`.
+`--enrollment-grant-id`; supplied filters are combined. All API commands accept `--server-url`.
 
 List commands default to `--limit 50 --offset 0`, with a maximum limit of 100 and offsets from
 0 through 1000000. Each invocation requests one page, and `total` counts all matching records,
@@ -116,8 +116,55 @@ The output is JSON with the API's existing shape: lists contain `items`, `total`
 a stored result returns HTTP 404, which the CLI reports with a nonzero exit status.
 
 These commands perform GET requests using operator credentials. They preserve the same timeout,
-redirect refusal, response validation, and error redaction as the grant commands. Task creation,
-cancellation, agent selection shortcuts, and local task context are outside this slice.
+redirect refusal, response validation, and error redaction as the grant commands. CLI task creation
+and cancellation are not implemented yet.
+
+### Local agent and task context
+
+Select an active agent once, then inspect its tasks and reuse a task ID:
+
+```bash
+uv run c2-relay-operator agents use <agent_id>
+uv run c2-relay-operator tasks list --status completed
+uv run c2-relay-operator tasks show <task_id>
+uv run c2-relay-operator tasks result
+uv run c2-relay-operator tasks show
+uv run c2-relay-operator context show
+uv run c2-relay-operator context clear
+```
+
+`agents use` verifies the agent through the operator-authenticated
+`GET /api/v1/agents/{agent_id}` endpoint before saving it. Unknown or disabled agents do not
+replace the current selection. Selecting a different agent clears the last task; reselecting
+the same agent preserves it. A selection is a convenience, not an authorization grant: the
+server still authenticates every API request and checks its current state.
+
+`tasks list` defaults to the selected agent, or all agents if none is selected. An explicit
+`--agent-id` overrides the selection; `--all-agents` bypasses it. These flags are mutually
+exclusive. Neither flag changes the saved selection. `tasks show` and `tasks result` accept an
+explicit task UUID or fall back to the last successfully inspected task. A successful detail or
+result read updates that last-task reference, but never changes the selected agent, even when
+the task belongs to a different agent. Failed reads preserve the previous context. Without a
+last task, omitting the UUID fails locally.
+
+The context file defaults to `.local/operator-context.json`, ignored by Git. Override its path
+with `C2_RELAY_OPERATOR_CONTEXT_PATH` in operator-side settings. It contains only the normalized
+server origin, operator UUID, selected agent UUID, and last task UUID, never credentials or
+results. It uses atomic replacement and mode `0600`, with the same POSIX platform requirements
+as agent state. Keep it separate from the agent identity and pending-result files.
+
+There is one saved server/operator scope, not a profile collection. Changing the server origin
+or operator UUID makes previous selections unavailable; the next context write replaces the
+saved scope. Equivalent origins normalize hostname case, trailing slashes, and default ports;
+different schemes, hosts, and nondefault ports remain separate. Local `context show` and
+`context clear` use the UUID parsed from the credential without contacting the server, so their
+success does not prove that the credential is valid or the operator is active.
+
+Malformed, insecure, or symlinked context files are rejected with a sanitized error instead of
+being overwritten. Inspect the configured path and permissions; if necessary, remove only the
+non-secret context file and select the agent again. Inventory, audit, and grant commands do not
+read this file; explicit-agent and all-agent task listings can also bypass it. Concurrent CLI
+sessions share this file, with the last successful write winning.
 
 ## Enroll and run the agent
 

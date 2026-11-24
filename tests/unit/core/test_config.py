@@ -21,6 +21,7 @@ def test_settings_have_local_development_defaults(
     assert settings.operator_server_url == "http://127.0.0.1:8000"
     assert settings.operator_credential is None
     assert settings.operator_request_timeout == 10.0
+    assert settings.operator_context_path == Path(".local/operator-context.json")
     assert settings.server_host == "127.0.0.1"
     assert settings.server_port == 8000
     assert settings.task_lease_seconds == 30.0
@@ -44,6 +45,7 @@ def test_settings_read_prefixed_environment(
     monkeypatch.setenv("C2_RELAY_OPERATOR_SERVER_URL", "https://relay.test")
     monkeypatch.setenv("C2_RELAY_OPERATOR_CREDENTIAL", "o" * 32)
     monkeypatch.setenv("C2_RELAY_OPERATOR_REQUEST_TIMEOUT", "5")
+    monkeypatch.setenv("C2_RELAY_OPERATOR_CONTEXT_PATH", ".local/test-context.json")
 
     settings = Settings()
 
@@ -57,6 +59,7 @@ def test_settings_read_prefixed_environment(
     assert settings.operator_server_url == "https://relay.test"
     assert settings.operator_credential == SecretStr("o" * 32)
     assert settings.operator_request_timeout == 5.0
+    assert settings.operator_context_path == Path(".local/test-context.json")
 
 
 def test_blank_bootstrap_token_in_env_file_disables_enrollment(

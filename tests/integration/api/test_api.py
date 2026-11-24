@@ -119,6 +119,25 @@ def operator_headers(credential: str = OPERATOR_CREDENTIAL) -> dict[str, str]:
     return {"Authorization": f"Bearer {credential}"}
 
 
+def test_operator_can_inspect_one_agent_without_exposing_credentials(client: TestClient) -> None:
+    agent_id, credential = enroll(client)
+    path = f"/api/v1/agents/{agent_id}"
+    for headers in ({}, agent_headers(credential)):
+        assert client.get(path, headers=headers).status_code == 401
+    response = client.get(path, headers=operator_headers())
+    assert response.status_code == 200
+    assert response.json()["id"] == agent_id
+    assert response.json()["status"] == "active"
+    assert credential not in response.text
+    assert "credential" not in response.text
+    assert "digest" not in response.text
+    assert (
+        client.get(f"/api/v1/agents/{UUID(int=99)}", headers=operator_headers()).status_code == 404
+    )
+    assert client.post(f"{path}/disable", headers=operator_headers()).status_code == 200
+    assert client.get(path, headers=operator_headers()).json()["status"] == "disabled"
+
+
 def issue_grant(client: TestClient, expires_in_seconds: int = 900) -> dict[str, Any]:
     response = client.post(
         "/api/v1/enrollment-grants",

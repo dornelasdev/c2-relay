@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from c2_relay.agent.storage import AtomicJsonStore
+from c2_relay.core.storage import AtomicJsonStore
 from c2_relay.models import ActionResult
 
 _RESULT_ADAPTER: TypeAdapter[ActionResult] = TypeAdapter(ActionResult)

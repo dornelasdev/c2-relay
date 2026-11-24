@@ -20,10 +20,31 @@ from c2_relay.models import (
     EnrollmentGrant,
     EnrollmentGrantId,
     OperatorId,
+    RegisteredAgent,
     Task,
     TaskId,
     TaskStatus,
 )
+
+
+def normalize_server_url(server_url: str) -> str:
+    try:
+        url = httpx2.URL(server_url)
+    except httpx2.InvalidURL:
+        raise ValueError("operator server URL must be a valid HTTP(S) origin") from None
+    if (
+        url.scheme not in {"http", "https"}
+        or not url.host
+        or url.username
+        or url.password
+        or url.query
+        or url.fragment
+        or url.path not in {"", "/"}
+    ):
+        raise ValueError("operator server URL must be an HTTP(S) origin without credentials")
+    if url.port == {"http": 80, "https": 443}[url.scheme]:
+        url = url.copy_with(port=None)
+    return str(url).rstrip("/")
 
 
 class OperatorClient:
@@ -35,17 +56,7 @@ class OperatorClient:
         timeout: float,
         client: httpx2.Client | None = None,
     ) -> None:
-        url = httpx2.URL(server_url)
-        if (
-            url.scheme not in {"http", "https"}
-            or not url.host
-            or url.username
-            or url.password
-            or url.query
-            or url.fragment
-            or url.path not in {"", "/"}
-        ):
-            raise ValueError("operator server URL must be an HTTP(S) origin without credentials")
+        server_url = normalize_server_url(server_url)
         self._credential = credential
         self._owns_client = client is None
         self._client = client or httpx2.Client(
@@ -81,6 +92,9 @@ class OperatorClient:
         return AgentListResponse.model_validate_json(
             self._get("/api/v1/agents", status=status, limit=limit, offset=offset)
         )
+
+    def get_agent(self, agent_id: AgentId) -> RegisteredAgent:
+        return RegisteredAgent.model_validate_json(self._get(f"/api/v1/agents/{agent_id}"))
 
     def list_tasks(
         self,

@@ -12,6 +12,11 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added read-only operator CLI commands for agent inventory, task lists/details, stored results,
   and audit history. Commands use the existing API, preserve JSON response shapes, validate UUIDs
   and bounded filters locally, and reuse operator authentication and redacted error handling.
+- Added server/operator-scoped local CLI context with `agents use`, `context show`, and
+  `context clear`. Task reads remember the last task; task listing can use the selected agent.
+  Context contains only references, uses owner-only atomic storage, and never stores credentials.
+- Added operator-authenticated `GET /api/v1/agents/{agent_id}` for individual agent inspection
+  and validated CLI selection, without exposing agent credentials.
 
 ### Fixed
 

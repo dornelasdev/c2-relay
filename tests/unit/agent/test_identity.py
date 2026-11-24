@@ -8,6 +8,8 @@ import pytest
 from pydantic import SecretStr
 
 from c2_relay.agent.identity import AgentIdentity, IdentityStore
+from c2_relay.agent.storage import AtomicJsonStore as LegacyAtomicJsonStore
+from c2_relay.core.storage import AtomicJsonStore
 from c2_relay.models import AgentId
 
 
@@ -16,6 +18,10 @@ def identity() -> AgentIdentity:
         agent_id=AgentId(UUID("20000000-0000-4000-8000-000000000001")),
         credential=SecretStr("secret-credential"),
     )
+
+
+def test_legacy_storage_import_preserves_shared_helper() -> None:
+    assert LegacyAtomicJsonStore is AtomicJsonStore
 
 
 def test_identity_store_round_trip_uses_restrictive_permissions(tmp_path: Path) -> None:
@@ -73,7 +79,7 @@ def test_identity_store_preserves_other_open_errors(tmp_path: Path) -> None:
     path = tmp_path / "identity.json"
 
     with (
-        patch("c2_relay.agent.storage.os.open", side_effect=PermissionError("access denied")),
+        patch("c2_relay.core.storage.os.open", side_effect=PermissionError("access denied")),
         pytest.raises(PermissionError, match="access denied"),
     ):
         IdentityStore(path).load()
@@ -92,7 +98,7 @@ def test_identity_store_rejects_another_owner(tmp_path: Path) -> None:
     IdentityStore(path).save(identity())
 
     with (
-        patch("c2_relay.agent.storage.os.getuid", return_value=path.stat().st_uid + 1),
+        patch("c2_relay.core.storage.os.getuid", return_value=path.stat().st_uid + 1),
         pytest.raises(PermissionError, match="owned by the current user"),
     ):
         IdentityStore(path).load()

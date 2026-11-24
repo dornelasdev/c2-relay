@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import SecretStr
 
-from c2_relay.agent.storage import AtomicJsonStore
+from c2_relay.core.storage import AtomicJsonStore
 from c2_relay.models import AgentId, DomainModel
 
 

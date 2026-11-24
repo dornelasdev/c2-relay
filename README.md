@@ -72,13 +72,19 @@ and audit events:
 
 ```bash
 uv run c2-relay-operator agents list --status active
+uv run c2-relay-operator agents use <agent_id>
 uv run c2-relay-operator tasks list --status completed
 uv run c2-relay-operator tasks show <task_id>
-uv run c2-relay-operator tasks result <task_id>
+uv run c2-relay-operator tasks result
+uv run c2-relay-operator context show
 uv run c2-relay-operator audit list --event-type task.completed
 ```
 
-Replace `<task_id>` with a task UUID. Commands use the operator credential through the existing
+Replace the placeholders with their UUIDs. `agents use` remembers an active agent for task
+listing; `tasks show <task_id>` remembers a task so later `show` or `result` calls can omit its ID.
+Use `tasks list --all-agents` to bypass the selected agent and `context clear` to reset selections.
+The ignored `.local/operator-context.json` file stores only references, scoped to the server URL
+and operator ID, not credentials. Commands use the operator credential through the existing
 hidden prompt or operator-side configuration and print validated JSON. Lists return one bounded
 page; use `--limit` and `--offset` for pagination. See the local runbook for filters and examples.
 

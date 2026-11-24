@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     operator_server_url: str = Field(default="http://127.0.0.1:8000", min_length=1)
     operator_credential: SecretStr | None = Field(default=None, min_length=32)
     operator_request_timeout: float = Field(default=10.0, gt=0, le=300)
+    operator_context_path: Path = Path(".local/operator-context.json")
     agent_server_url: str = Field(default="http://127.0.0.1:8000", min_length=1)
     agent_state_path: Path = Path("agent-state.json")
     agent_result_path: Path = Path("pending-result.json")

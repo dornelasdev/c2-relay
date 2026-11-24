@@ -176,6 +176,22 @@ and pagination bounds before credential input or network requests. Each list com
 one page with the same defaults and limits as the API; it does not automatically enumerate all
 records. Task and stored-result JSON retain their existing response shapes.
 
+`cli/context.py` maintains one non-secret selection scope, keyed by normalized API origin and
+operator UUID. `agents use` validates an active agent with the protected individual-agent GET
+endpoint. Task lists default to this selection unless explicitly overridden; successful task
+detail/result reads remember the task ID without retargeting the selected agent. Changing the
+selected agent clears the last task. Changing the origin/operator yields empty selections,
+and the next write replaces the old scope. Responses with unexpected resource IDs are rejected
+before saving. Context is a convenience rather than an authorization boundary; the API still
+checks every request. Local context inspection/reset does not authenticate with the server.
+
+The shared `core/storage.py` helper provides atomic owner-only JSON storage for both operator
+context and agent state. The previous `agent/storage.py` import remains a compatibility alias.
+Context rejects malformed files, extra fields, insecure permissions, and symlinks without
+printing their contents or overwriting them. Its default path is `.local/operator-context.json`;
+no credentials, metadata, or results are written there. This is a single local context file,
+not a multi-profile store; concurrent writes use last-successful-write semantics.
+
 The CLI obtains the operator credential from a hidden prompt or an optional operator-side
 setting. Credentials are not accepted as command-line arguments. Responses are validated
 against the existing API/domain contracts before JSON output. Issuance output deliberately

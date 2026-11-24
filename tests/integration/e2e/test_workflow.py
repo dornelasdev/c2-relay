@@ -47,7 +47,11 @@ def test_assembled_agent_server_workflow(
         id_factory=lambda: OPERATOR_UUID,
         credential_factory=lambda operator_id: SecretStr(OPERATOR_CREDENTIAL),
     ).provision("Workflow Operator")
-    settings = Settings(database_url=database_url, bootstrap_token=None)
+    settings = Settings(
+        database_url=database_url,
+        bootstrap_token=None,
+        operator_context_path=tmp_path / "operator-context.json",
+    )
     app = create_app(
         settings,
         factory,
@@ -130,12 +134,15 @@ def test_assembled_agent_server_workflow(
             assert agents["items"][0]["id"] == str(identity.agent_id)
             assert "credential" not in agents["items"][0]
 
+            operator_main(["agents", "use", str(identity.agent_id)])
+            context = json.loads(capsys.readouterr().out)
+            assert context["selected_agent_id"] == str(identity.agent_id)
+            assert context["last_task_id"] is None
+
             operator_main(
                 [
                     "tasks",
                     "list",
-                    "--agent-id",
-                    str(identity.agent_id),
                     "--status",
                     "completed",
                     "--limit",
@@ -151,11 +158,19 @@ def test_assembled_agent_server_workflow(
             assert task["id"] == str(task_id)
             assert task["status"] == "completed"
 
-            operator_main(["tasks", "result", str(task_id)])
+            operator_main(["tasks", "result"])
             result = json.loads(capsys.readouterr().out)["item"]
             assert result["result"]["task_id"] == str(task_id)
             assert result["result"]["output"]["kind"] == "host.hostname"
             assert result["received_at"]
+
+            operator_main(["context", "show"])
+            assert json.loads(capsys.readouterr().out)["last_task_id"] == str(task_id)
+            operator_main(["tasks", "show"])
+            assert json.loads(capsys.readouterr().out)["id"] == str(task_id)
+            operator_main(["context", "clear"])
+            cleared = json.loads(capsys.readouterr().out)
+            assert cleared["selected_agent_id"] is cleared["last_task_id"] is None
 
             operator_main(
                 ["audit", "list", "--task-id", str(task_id), "--event-type", "task.completed"]
@@ -221,6 +236,7 @@ def test_openapi_describes_versioned_routes_and_separate_bearer_authentication(
         assert scheme["description"]
     operator_routes = (
         ("/api/v1/agents", "get"),
+        ("/api/v1/agents/{agent_id}", "get"),
         ("/api/v1/agents/{agent_id}/disable", "post"),
         ("/api/v1/tasks", "get"),
         ("/api/v1/tasks", "post"),
